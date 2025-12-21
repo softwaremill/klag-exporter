@@ -1,0 +1,11 @@
+config:
+  clusters:
+    - name: "my-cluster"
+      bootstrap_servers: "my-cluster-kafka-bootstrap.kafka:9092"
+      group_whitelist: [ ".*" ]
+      group_blacklist: [ ]
+      topic_whitelist: [ ".*" ]
+      topic_blacklist: [ "^__.*" ]  # Exclude internal topics like __consumer_offsets
+      clusters.consumer_properties: { }
+serviceMonitor:
+  enabled: true

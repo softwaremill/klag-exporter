@@ -1,0 +1,46 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "klag-exporter.fullname" . }}-config
+  labels:
+    {{- include "klag-exporter.labels" . | nindent 4 }}
+data:
+  config.toml: |
+    [exporter]
+    {{- with .Values.config.exporter }}
+    poll_interval = {{ .poll_interval | quote }}
+    http_port = {{ .http_port }}
+    http_host = {{ .http_host | quote }}
+    granularity = {{ .granularity | quote }}
+    {{- end }}
+
+    [exporter.timestamp_sampling]
+    {{- with index .Values.config "exporter.timestamp_sampling" }}
+    enabled = {{ .enabled }}
+    cache_ttl = {{ .cache_ttl | quote }}
+    max_concurrent_fetches = {{ .max_concurrent_fetches }}
+    {{- end }}
+
+    [exporter.otel]
+    {{- with index .Values.config "exporter.otel" }}
+    enabled = {{ .enabled }}
+    endpoint = {{ .endpoint | quote }}
+    export_interval = {{ .export_interval | quote }}
+    {{- end }}
+
+    {{- range .Values.config.clusters }}
+    [[clusters]]
+    name = {{ .name | quote }}
+    bootstrap_servers = {{ .bootstrap_servers | quote }}
+    group_whitelist = [{{- range $i, $v := .group_whitelist }}{{- if $i }}, {{ end }}{{ $v | quote }}{{- end }}]
+    group_blacklist = [{{- range $i, $v := .group_blacklist }}{{- if $i }}, {{ end }}{{ $v | quote }}{{- end }}]
+    topic_whitelist = [{{- range $i, $v := .topic_whitelist }}{{- if $i }}, {{ end }}{{ $v | quote }}{{- end }}]
+    topic_blacklist = [{{- range $i, $v := .topic_blacklist }}{{- if $i }}, {{ end }}{{ $v | quote }}{{- end }}]
+    {{- if index . "clusters.consumer_properties" }}
+
+    [clusters.consumer_properties]
+    {{- range $key, $value := index . "clusters.consumer_properties" }}
+    {{ $key }} = {{ $value | quote }}
+    {{- end }}
+    {{- end }}
+    {{- end }}

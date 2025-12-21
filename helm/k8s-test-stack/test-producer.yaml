@@ -1,0 +1,32 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: kafka-test-producer
+  namespace: kafka
+  labels:
+    app: kafka-test-producer
+spec:
+  containers:
+  - name: producer
+    image: quay.io/strimzi/kafka:latest-kafka-4.1.1
+    command:
+    - /bin/bash
+    - -c
+    - |
+      echo "Starting producer..."
+      # Produce messages quickly to create lag
+      while true; do
+        echo "Message at $(date +%s): Hello from test producer - $(uuidgen)" | \
+          /opt/kafka/bin/kafka-console-producer.sh \
+            --bootstrap-server my-cluster-kafka-bootstrap.kafka:9092 \
+            --topic test-topic
+        sleep 1
+      done
+    resources:
+      requests:
+        memory: "128Mi"
+        cpu: "100m"
+      limits:
+        memory: "256Mi"
+        cpu: "200m"
+  restartPolicy: Always
