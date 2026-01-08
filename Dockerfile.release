@@ -3,14 +3,14 @@
 #   binaries/amd64/klag-exporter
 #   binaries/arm64/klag-exporter
 
-FROM debian:bookworm-slim
+FROM ubuntu:24.04
 
 ARG TARGETARCH
 
 # Install runtime dependencies
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
-    libssl3 \
+    libssl3t64 \
     libsasl2-2 \
     curl \
     && rm -rf /var/lib/apt/lists/*
