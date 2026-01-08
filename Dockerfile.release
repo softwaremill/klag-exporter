@@ -16,7 +16,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Create non-root user
-RUN useradd -r -u 1000 -g root klag
+RUN useradd -r -g root klag
 
 WORKDIR /app
 
