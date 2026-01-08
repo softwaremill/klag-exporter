@@ -6,8 +6,6 @@
 BOOTSTRAP_SERVER="kafka:29092"
 TOPIC1="test-topic"
 TOPIC2="high-volume-topic"
-TOPIC3="compacted-topic"
-TOPIC4="retention-test"
 GROUP_ID="test-consumer-group"
 
 # Message counter
@@ -71,21 +69,6 @@ while true; do
     consume_with_rate $TOPIC1 $GROUP_ID 20 0.1 &
     consume_with_rate $TOPIC2 "high-volume-consumer" 40 0.05 &
     wait
-
-    # Phase 8: Compacted topic - VERY slow consumption (to build up lag for compaction detection)
-    # Only consume 2 messages per cycle to ensure lag builds up faster than consumption
-    echo "[$(date)] Phase 8: Compacted topic - very slow consumption (2 msgs)"
-    consume_with_rate $TOPIC3 "compacted-consumer" 2 1.0
-
-    # Phase 9: Retention-test topic - consume only 2 messages every OTHER cycle
-    # Producer adds 30 messages/cycle, retention deletes messages after 60s
-    # This ensures committed_offset eventually falls behind low_watermark
-    if [ $((RANDOM % 3)) -eq 0 ]; then
-        echo "[$(date)] Phase 9: Retention-test topic - consuming 2 msgs (1 in 3 cycles)"
-        consume_with_rate $TOPIC4 "retention-lagging-consumer" 2 0.5
-    else
-        echo "[$(date)] Phase 9: Retention-test topic - SKIPPING this cycle"
-    fi
 
     echo "[$(date)] Consumer cycle complete"
     echo "---"

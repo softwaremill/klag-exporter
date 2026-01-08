@@ -47,7 +47,10 @@ impl OffsetCollector {
 
         // List all consumer groups
         let all_groups = self.client.list_consumer_groups()?;
-        debug!(total_groups = all_groups.len(), "Listed all consumer groups");
+        debug!(
+            total_groups = all_groups.len(),
+            "Listed all consumer groups"
+        );
 
         // Filter groups
         let filtered_groups: Vec<_> = all_groups
@@ -60,7 +63,10 @@ impl OffsetCollector {
         );
 
         // Get group descriptions
-        let group_ids: Vec<&str> = filtered_groups.iter().map(|g| g.group_id.as_str()).collect();
+        let group_ids: Vec<&str> = filtered_groups
+            .iter()
+            .map(|g| g.group_id.as_str())
+            .collect();
         let descriptions = self.client.describe_consumer_groups(&group_ids)?;
 
         // Fetch watermarks for all topics

@@ -93,7 +93,11 @@ async fn ready_handler(State(state): State<AppState>) -> Response {
     if state.registry.cluster_count() > 0 {
         (StatusCode::OK, "Ready").into_response()
     } else {
-        (StatusCode::SERVICE_UNAVAILABLE, "Not ready - no cluster data").into_response()
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Not ready - no cluster data",
+        )
+            .into_response()
     }
 }
 
@@ -132,7 +136,10 @@ mod tests {
             .route("/metrics", get(metrics_handler))
             .route("/health", get(health_handler))
             .route("/ready", get(ready_handler))
-            .with_state(AppState { prometheus, registry })
+            .with_state(AppState {
+                prometheus,
+                registry,
+            })
     }
 
     #[tokio::test]
@@ -140,7 +147,12 @@ mod tests {
         let app = make_app();
 
         let response = app
-            .oneshot(Request::builder().uri("/metrics").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/metrics")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
 
@@ -152,7 +164,12 @@ mod tests {
         let app = make_app();
 
         let response = app
-            .oneshot(Request::builder().uri("/health").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
 
@@ -164,7 +181,12 @@ mod tests {
         let app = make_app();
 
         let response = app
-            .oneshot(Request::builder().uri("/ready").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/ready")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
 

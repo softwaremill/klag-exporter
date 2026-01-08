@@ -16,6 +16,7 @@ A high-performance Apache Kafka® consumer group lag exporter written in Rust. C
 ## Features
 
 - **Accurate Time Lag Calculation** — Directly reads message timestamps from Kafka® partitions instead of interpolating from lookup tables
+- **Compaction & Retention Detection** — Automatically detects when log compaction or retention deletion may affect time lag accuracy
 - **Dual Export Support** — Native Prometheus HTTP endpoint (`/metrics`) and OpenTelemetry OTLP export
 - **Non-blocking Scrapes** — Continuous background collection with instant metric reads (no Kafka® calls during Prometheus scrapes)
 - **Multi-cluster Support** — Monitor multiple Kafka® clusters with independent collection loops and failure isolation
@@ -53,6 +54,28 @@ A high-performance Apache Kafka® consumer group lag exporter written in Rust. C
 - Reads actual message timestamp — always accurate
 - Handles idle producers correctly (shows true message age)
 - TTL-cached to prevent excessive broker load
+
+### Compaction and Retention Limitations
+
+Both **log compaction** (`cleanup.policy=compact`) and **retention-based deletion** can affect time lag accuracy:
+
+| Scenario | Effect on Offset Lag | Effect on Time Lag |
+|----------|---------------------|-------------------|
+| **Compaction** | Inflated (some offsets no longer exist) | Understated (reads newer message) |
+| **Retention** | Inflated (deleted messages still counted) | Understated (reads newer message) |
+
+**How it happens:** When a consumer's committed offset points to a deleted message, Kafka returns the next available message instead. This message has a later timestamp, making time lag appear smaller than reality.
+
+**Detection:** klag-exporter automatically detects these conditions and exposes:
+- `compaction_detected` and `retention_detected` labels on `kafka_consumergroup_group_lag_seconds`
+- `kafka_lag_exporter_compaction_detected_total` and `kafka_lag_exporter_retention_detected_total` counters
+
+**Recommendations:**
+- For affected partitions, rely more on offset lag than time lag
+- Alert on `kafka_lag_exporter_compaction_detected_total > 0` or `kafka_lag_exporter_retention_detected_total > 0`
+- Investigate if detection counts are high — may indicate very lagging consumers or aggressive compaction/retention settings
+
+See [docs/compaction-detection.md](docs/compaction-detection.md) for detailed technical explanation.
 
 ## Quick Start
 
@@ -188,6 +211,8 @@ Use `${VAR_NAME}` syntax in config values. The exporter will substitute with env
 | `kafka_consumergroup_poll_time_ms` | cluster_name | Time to poll all offsets |
 | `kafka_lag_exporter_scrape_duration_seconds` | cluster_name | Collection cycle duration |
 | `kafka_lag_exporter_up` | — | 1 if healthy, 0 otherwise |
+| `kafka_lag_exporter_compaction_detected_total` | cluster_name | Partitions where log compaction was detected |
+| `kafka_lag_exporter_retention_detected_total` | cluster_name | Partitions where retention deletion was detected |
 
 ## HTTP Endpoints
 

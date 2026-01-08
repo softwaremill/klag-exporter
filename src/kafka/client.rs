@@ -80,13 +80,15 @@ impl KafkaClient {
             client_config.set(key, value);
         }
 
-        let admin: AdminClient<DefaultClientContext> = client_config
-            .create()
-            .map_err(KlagError::Kafka)?;
+        let admin: AdminClient<DefaultClientContext> =
+            client_config.create().map_err(KlagError::Kafka)?;
 
         let consumer: BaseConsumer = client_config
             .clone()
-            .set("group.id", format!("klag-exporter-internal-{}", config.name))
+            .set(
+                "group.id",
+                format!("klag-exporter-internal-{}", config.name),
+            )
             .set("enable.auto.commit", "false")
             .create()
             .map_err(KlagError::Kafka)?;
@@ -139,8 +141,8 @@ impl KafkaClient {
                     .members()
                     .iter()
                     .map(|m| {
-                        let assignments = parse_member_assignment(m.assignment())
-                            .unwrap_or_default();
+                        let assignments =
+                            parse_member_assignment(m.assignment()).unwrap_or_default();
 
                         GroupMemberInfo {
                             member_id: m.id().to_string(),
@@ -187,10 +189,7 @@ impl KafkaClient {
         let mut offsets = HashMap::new();
         for elem in committed.elements() {
             if let rdkafka::Offset::Offset(offset) = elem.offset() {
-                offsets.insert(
-                    TopicPartition::new(elem.topic(), elem.partition()),
-                    offset,
-                );
+                offsets.insert(TopicPartition::new(elem.topic(), elem.partition()), offset);
             }
         }
 
@@ -249,10 +248,7 @@ impl KafkaClient {
                 OffsetPosition::Latest => high,
             };
 
-            offsets.insert(
-                TopicPartition::new(elem.topic(), elem.partition()),
-                offset,
-            );
+            offsets.insert(TopicPartition::new(elem.topic(), elem.partition()), offset);
         }
 
         Ok(offsets)
@@ -264,11 +260,10 @@ impl KafkaClient {
 
         for topic in metadata.topics() {
             for partition in topic.partitions() {
-                match self.consumer.fetch_watermarks(
-                    topic.name(),
-                    partition.id(),
-                    self.timeout,
-                ) {
+                match self
+                    .consumer
+                    .fetch_watermarks(topic.name(), partition.id(), self.timeout)
+                {
                     Ok((low, high)) => {
                         watermarks.insert(
                             TopicPartition::new(topic.name(), partition.id()),

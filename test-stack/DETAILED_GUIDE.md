@@ -70,8 +70,8 @@ This document provides an in-depth explanation of how the test stack works, what
 │                                      │  Port: 3000  │                   │
 │                                      │              │                   │
 │                                      │ Dashboard    │                   │
-│                                      │ with 15      │                   │
-│                                      │ panels       │                   │
+│                                      │ with lag     │                   │
+│                                      │ metrics      │                   │
 │                                      └──────────────┘                   │
 │                                                                          │
 │  ┌──────────────┐                                                       │
@@ -259,7 +259,7 @@ Prometheus scrapes klag-exporter every 10 seconds and stores the time-series dat
 
 **Auto-provisioned with:**
 - Prometheus datasource (pre-configured)
-- Kafka Lag dashboard (15 panels)
+- Kafka Lag dashboard
 - Variables for filtering (cluster, consumer group, topic)
 
 ---
@@ -458,12 +458,12 @@ These are the most important graphs - they show the lag trends.
 
 Shows if lag is evenly distributed or concentrated on specific partitions.
 
-### Row 4: Partition Offsets
+### Row 4: Throughput & Distribution
 
 | Panel | What It Shows |
 |-------|---------------|
-| Partition Offsets | Latest vs Committed offsets (gap = lag) |
-| Message Rate | `rate()` of offset changes (produce/consume speed) |
+| Partition Latest Offsets | Per-partition offset values (shows partition distribution) |
+| Topic Message Rate | `rate()` of offset changes aggregated by topic (produce/consume throughput) |
 
 ---
 

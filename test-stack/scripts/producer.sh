@@ -6,15 +6,9 @@
 BOOTSTRAP_SERVER="kafka:29092"
 TOPIC1="test-topic"
 TOPIC2="high-volume-topic"
-TOPIC3="compacted-topic"
-TOPIC4="retention-test"
 
 # Message counter
 MSG_COUNT=0
-
-# Key counter for compacted topic (reuse keys to trigger compaction)
-KEY_COUNT=0
-MAX_KEYS=10  # Only use 10 unique keys so compaction can occur
 
 # Function to produce messages
 produce_messages() {
@@ -27,28 +21,6 @@ produce_messages() {
         echo "message-$MSG_COUNT-$(date +%s%N)" | kafka-console-producer \
             --bootstrap-server $BOOTSTRAP_SERVER \
             --topic $topic \
-            2>/dev/null
-
-        if [ "$delay" != "0" ]; then
-            sleep $delay
-        fi
-    done
-}
-
-# Function to produce keyed messages for compacted topic
-produce_keyed_messages() {
-    local topic=$1
-    local count=$2
-    local delay=$3
-
-    for ((i=1; i<=count; i++)); do
-        KEY_COUNT=$(( (KEY_COUNT % MAX_KEYS) + 1 ))
-        MSG_COUNT=$((MSG_COUNT + 1))
-        echo "key-$KEY_COUNT:value-$MSG_COUNT-$(date +%s%N)" | kafka-console-producer \
-            --bootstrap-server $BOOTSTRAP_SERVER \
-            --topic $topic \
-            --property "parse.key=true" \
-            --property "key.separator=:" \
             2>/dev/null
 
         if [ "$delay" != "0" ]; then
@@ -90,16 +62,6 @@ while true; do
     produce_messages $TOPIC1 50 0.02 &
     produce_messages $TOPIC2 100 0.01 &
     wait
-
-    # Phase 7: Compacted topic - many messages with same keys (triggers compaction)
-    echo "[$(date)] Phase 7: Compacted topic - 100 keyed messages"
-    produce_keyed_messages $TOPIC3 100 0.01
-
-    # Phase 8: Retention-test topic - continuous production for retention demo
-    # Topic has 60s retention, so messages older than 60s get deleted
-    # This creates a scenario where consumer's committed offset falls behind low_watermark
-    echo "[$(date)] Phase 8: Retention-test topic - 30 messages (will be deleted by retention)"
-    produce_messages $TOPIC4 30 0.1
 
     echo "[$(date)] Cycle complete. Total messages produced: $MSG_COUNT"
     echo "---"

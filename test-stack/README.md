@@ -57,8 +57,8 @@ Time-series graphs:
 - Consumer Group Total Lag over time
 - Time Lag in seconds over time
 - Per-partition lag breakdown
-- Partition offsets (latest vs committed)
-- Message rates (produce vs consume)
+- Partition latest offsets (distribution across partitions)
+- Topic message rates (produce vs consume throughput)
 
 ### 2. Lag Patterns
 

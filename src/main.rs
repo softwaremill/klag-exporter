@@ -64,21 +64,18 @@ async fn main() -> anyhow::Result<()> {
         let exporter_config = config.exporter.clone();
 
         let handle = tokio::spawn(async move {
-            let manager = match ClusterManager::new(
-                cluster_config.clone(),
-                registry,
-                &exporter_config,
-            ) {
-                Ok(m) => m,
-                Err(e) => {
-                    error!(
-                        cluster = cluster_config.name,
-                        error = %e,
-                        "Failed to create cluster manager"
-                    );
-                    return;
-                }
-            };
+            let manager =
+                match ClusterManager::new(cluster_config.clone(), registry, &exporter_config) {
+                    Ok(m) => m,
+                    Err(e) => {
+                        error!(
+                            cluster = cluster_config.name,
+                            error = %e,
+                            "Failed to create cluster manager"
+                        );
+                        return;
+                    }
+                };
 
             manager.run(shutdown_rx).await;
         });
@@ -143,8 +140,7 @@ async fn main() -> anyhow::Result<()> {
 }
 
 fn init_logging(level: &str) {
-    let env_filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(level));
+    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(level));
 
     tracing_subscriber::registry()
         .with(env_filter)

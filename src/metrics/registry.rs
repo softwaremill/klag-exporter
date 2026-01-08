@@ -50,7 +50,12 @@ impl MetricsRegistry {
     /// Update metrics with default options (partition granularity, no custom labels)
     #[allow(dead_code)]
     pub fn update(&self, cluster: &str, lag_metrics: LagMetrics) {
-        self.update_with_options(cluster, lag_metrics, Granularity::Partition, &HashMap::new())
+        self.update_with_options(
+            cluster,
+            lag_metrics,
+            Granularity::Partition,
+            &HashMap::new(),
+        )
     }
 
     /// Update metrics with granularity control and custom labels
@@ -229,7 +234,8 @@ impl MetricsRegistry {
 
         self.metrics.insert(cluster.to_string(), points);
         self.last_update.insert(cluster.to_string(), now);
-        self.last_update_timestamp.insert(cluster.to_string(), unix_timestamp);
+        self.last_update_timestamp
+            .insert(cluster.to_string(), unix_timestamp);
     }
 
     pub fn set_healthy(&self, healthy: bool) {
@@ -241,7 +247,8 @@ impl MetricsRegistry {
     }
 
     pub fn set_scrape_duration_ms(&self, duration_ms: u64) {
-        self.last_scrape_duration_ms.store(duration_ms, Ordering::SeqCst);
+        self.last_scrape_duration_ms
+            .store(duration_ms, Ordering::SeqCst);
     }
 
     pub fn get_scrape_duration_seconds(&self) -> f64 {
@@ -301,10 +308,7 @@ impl MetricsRegistry {
         // Group metrics by name for proper HELP/TYPE output
         let mut by_name: HashMap<String, Vec<MetricPoint>> = HashMap::new();
         for point in all_points {
-            by_name
-                .entry(point.name.clone())
-                .or_default()
-                .push(point);
+            by_name.entry(point.name.clone()).or_default().push(point);
         }
 
         // Sort metric names for consistent output
@@ -339,9 +343,18 @@ impl MetricsRegistry {
 
         // Add scrape duration metric
         let scrape_duration = self.get_scrape_duration_seconds();
-        output.push_str(&format!("# HELP {} {}\n", METRIC_SCRAPE_DURATION_SECONDS, HELP_SCRAPE_DURATION_SECONDS));
-        output.push_str(&format!("# TYPE {} gauge\n", METRIC_SCRAPE_DURATION_SECONDS));
-        output.push_str(&format!("{} {:.6}\n", METRIC_SCRAPE_DURATION_SECONDS, scrape_duration));
+        output.push_str(&format!(
+            "# HELP {} {}\n",
+            METRIC_SCRAPE_DURATION_SECONDS, HELP_SCRAPE_DURATION_SECONDS
+        ));
+        output.push_str(&format!(
+            "# TYPE {} gauge\n",
+            METRIC_SCRAPE_DURATION_SECONDS
+        ));
+        output.push_str(&format!(
+            "{} {:.6}\n",
+            METRIC_SCRAPE_DURATION_SECONDS, scrape_duration
+        ));
 
         // Add exporter health metric
         output.push_str(&format!("# HELP {} {}\n", METRIC_UP, HELP_UP));
@@ -624,12 +637,7 @@ mod tests {
         let registry = MetricsRegistry::new();
         let metrics = make_lag_metrics();
 
-        registry.update_with_options(
-            "test-cluster",
-            metrics,
-            Granularity::Topic,
-            &HashMap::new(),
-        );
+        registry.update_with_options("test-cluster", metrics, Granularity::Topic, &HashMap::new());
 
         let output = registry.render_prometheus();
 

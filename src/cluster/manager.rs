@@ -227,8 +227,13 @@ impl ClusterManager {
             .as_millis() as i64;
 
         let poll_time_ms = start.elapsed().as_millis() as u64;
-        let lag_metrics =
-            LagCalculator::calculate(&snapshot, &timestamps, now_ms, poll_time_ms, &compacted_topics);
+        let lag_metrics = LagCalculator::calculate(
+            &snapshot,
+            &timestamps,
+            now_ms,
+            poll_time_ms,
+            &compacted_topics,
+        );
 
         // Update registry with granularity and custom labels
         self.registry.update_with_options(

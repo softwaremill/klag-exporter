@@ -150,8 +150,8 @@ impl Config {
         let content = std::fs::read_to_string(config_path)?;
         let content = Self::substitute_env_vars(&content);
 
-        let config: Config =
-            toml::from_str(&content).map_err(|e| KlagError::Config(format!("TOML parse error: {}", e)))?;
+        let config: Config = toml::from_str(&content)
+            .map_err(|e| KlagError::Config(format!("TOML parse error: {}", e)))?;
 
         config.validate()?;
         Ok(config)
@@ -173,7 +173,9 @@ impl Config {
 
     pub fn validate(&self) -> Result<()> {
         if self.clusters.is_empty() {
-            return Err(KlagError::Config("At least one cluster must be configured".to_string()));
+            return Err(KlagError::Config(
+                "At least one cluster must be configured".to_string(),
+            ));
         }
 
         for cluster in &self.clusters {
@@ -187,7 +189,9 @@ impl Config {
 impl ClusterConfig {
     pub fn validate(&self) -> Result<()> {
         if self.name.is_empty() {
-            return Err(KlagError::Config("Cluster name cannot be empty".to_string()));
+            return Err(KlagError::Config(
+                "Cluster name cannot be empty".to_string(),
+            ));
         }
 
         if self.bootstrap_servers.is_empty() {

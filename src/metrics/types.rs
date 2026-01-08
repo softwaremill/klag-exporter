@@ -53,7 +53,12 @@ impl MetricPoint {
     }
 
     #[allow(dead_code)]
-    pub fn counter(name: impl Into<String>, labels: Labels, value: f64, help: &'static str) -> Self {
+    pub fn counter(
+        name: impl Into<String>,
+        labels: Labels,
+        value: f64,
+        help: &'static str,
+    ) -> Self {
         Self {
             name: name.into(),
             labels,

@@ -65,7 +65,11 @@ impl TimestampConsumer {
     }
 
     #[instrument(skip(self), fields(cluster = %self.cluster_name, topic = %tp.topic, partition = tp.partition, offset = offset))]
-    pub fn fetch_timestamp(&self, tp: &TopicPartition, offset: i64) -> Result<Option<TimestampFetchResult>> {
+    pub fn fetch_timestamp(
+        &self,
+        tp: &TopicPartition,
+        offset: i64,
+    ) -> Result<Option<TimestampFetchResult>> {
         use rdkafka::TopicPartitionList;
 
         // Create a fresh consumer for this fetch to avoid state conflicts
@@ -75,9 +79,7 @@ impl TimestampConsumer {
         tpl.add_partition_offset(&tp.topic, tp.partition, Offset::Offset(offset))
             .map_err(KlagError::Kafka)?;
 
-        consumer
-            .assign(&tpl)
-            .map_err(KlagError::Kafka)?;
+        consumer.assign(&tpl).map_err(KlagError::Kafka)?;
 
         // Poll for message - no seek needed since assign with offset already positions
         match consumer.poll(self.fetch_timeout) {
@@ -94,9 +96,7 @@ impl TimestampConsumer {
                         "Fetched message timestamp"
                     );
 
-                    Ok(timestamp.map(|ts| TimestampFetchResult {
-                        timestamp_ms: ts,
-                    }))
+                    Ok(timestamp.map(|ts| TimestampFetchResult { timestamp_ms: ts }))
                 }
                 Err(e) => {
                     warn!(

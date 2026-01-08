@@ -51,7 +51,7 @@ services:
   klag-exporter:
     build:
       context: ..
-      dockerfile: Dockerfile
+      dockerfile: Dockerfile.dev
     container_name: klag-exporter
     ports:
       - "8000:8000"
@@ -139,9 +139,6 @@ services:
         # Create topics
         kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic test-topic --partitions 6 --replication-factor 1
         kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic high-volume-topic --partitions 3 --replication-factor 1
-
-        # Create compacted topic for testing compaction detection
-        kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic compacted-topic --partitions 2 --replication-factor 1 --config cleanup.policy=compact --config min.cleanable.dirty.ratio=0.01 --config segment.ms=100
 
         echo "Starting producer..."
         /scripts/producer.sh

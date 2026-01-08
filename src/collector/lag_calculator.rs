@@ -105,9 +105,8 @@ impl LagCalculator {
             let member_map = build_member_map(group);
 
             for (tp, committed_offset) in &group.offsets {
-                let (low_watermark, high_watermark) = snapshot
-                    .get_watermark(tp)
-                    .unwrap_or((0, *committed_offset));
+                let (low_watermark, high_watermark) =
+                    snapshot.get_watermark(tp).unwrap_or((0, *committed_offset));
 
                 // Calculate lag, clamped to 0 for race conditions
                 let lag = (high_watermark - committed_offset).max(0);
@@ -166,9 +165,8 @@ impl LagCalculator {
                 // This ensures max_lag_seconds reflects the worst case we CAN measure,
                 // even if the partition with highest offset lag has no timestamp.
                 if let Some(secs) = lag_seconds {
-                    group_max_lag_seconds = Some(
-                        group_max_lag_seconds.map_or(secs, |current| current.max(secs)),
-                    );
+                    group_max_lag_seconds =
+                        Some(group_max_lag_seconds.map_or(secs, |current| current.max(secs)));
                 }
 
                 *topic_lags.entry(tp.topic.clone()).or_insert(0) += lag;
@@ -303,7 +301,8 @@ mod tests {
         let timestamps = HashMap::new();
         let now_ms = 1000000;
 
-        let metrics = LagCalculator::calculate(&snapshot, &timestamps, now_ms, 100, &HashSet::new());
+        let metrics =
+            LagCalculator::calculate(&snapshot, &timestamps, now_ms, 100, &HashSet::new());
 
         // topic1 partition 0: 100 - 90 = 10
         // topic1 partition 1: 200 - 150 = 50
@@ -343,7 +342,8 @@ mod tests {
         );
 
         let now_ms = 1000000;
-        let metrics = LagCalculator::calculate(&snapshot, &timestamps, now_ms, 100, &HashSet::new());
+        let metrics =
+            LagCalculator::calculate(&snapshot, &timestamps, now_ms, 100, &HashSet::new());
 
         let p0 = metrics
             .partition_metrics

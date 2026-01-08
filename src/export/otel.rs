@@ -41,7 +41,9 @@ pub async fn run_otel_exporter(
                 for metric in reg.get_otel_metrics() {
                     if metric.name == "kafka_partition_latest_offset" {
                         for dp in &metric.data_points {
-                            let attrs: Vec<KeyValue> = dp.attributes.iter()
+                            let attrs: Vec<KeyValue> = dp
+                                .attributes
+                                .iter()
                                 .map(|(k, v)| KeyValue::new(k.clone(), v.clone()))
                                 .collect();
                             observer.observe(dp.value, &attrs);
@@ -62,7 +64,9 @@ pub async fn run_otel_exporter(
                 for metric in reg.get_otel_metrics() {
                     if metric.name == "kafka_partition_earliest_offset" {
                         for dp in &metric.data_points {
-                            let attrs: Vec<KeyValue> = dp.attributes.iter()
+                            let attrs: Vec<KeyValue> = dp
+                                .attributes
+                                .iter()
                                 .map(|(k, v)| KeyValue::new(k.clone(), v.clone()))
                                 .collect();
                             observer.observe(dp.value, &attrs);
@@ -83,7 +87,9 @@ pub async fn run_otel_exporter(
                 for metric in reg.get_otel_metrics() {
                     if metric.name == "kafka_consumergroup_group_offset" {
                         for dp in &metric.data_points {
-                            let attrs: Vec<KeyValue> = dp.attributes.iter()
+                            let attrs: Vec<KeyValue> = dp
+                                .attributes
+                                .iter()
                                 .map(|(k, v)| KeyValue::new(k.clone(), v.clone()))
                                 .collect();
                             observer.observe(dp.value, &attrs);
@@ -104,7 +110,9 @@ pub async fn run_otel_exporter(
                 for metric in reg.get_otel_metrics() {
                     if metric.name == "kafka_consumergroup_group_lag" {
                         for dp in &metric.data_points {
-                            let attrs: Vec<KeyValue> = dp.attributes.iter()
+                            let attrs: Vec<KeyValue> = dp
+                                .attributes
+                                .iter()
                                 .map(|(k, v)| KeyValue::new(k.clone(), v.clone()))
                                 .collect();
                             observer.observe(dp.value, &attrs);
@@ -125,7 +133,9 @@ pub async fn run_otel_exporter(
                 for metric in reg.get_otel_metrics() {
                     if metric.name == "kafka_consumergroup_group_lag_seconds" {
                         for dp in &metric.data_points {
-                            let attrs: Vec<KeyValue> = dp.attributes.iter()
+                            let attrs: Vec<KeyValue> = dp
+                                .attributes
+                                .iter()
                                 .map(|(k, v)| KeyValue::new(k.clone(), v.clone()))
                                 .collect();
                             observer.observe(dp.value, &attrs);
@@ -146,7 +156,9 @@ pub async fn run_otel_exporter(
                 for metric in reg.get_otel_metrics() {
                     if metric.name == "kafka_consumergroup_group_max_lag" {
                         for dp in &metric.data_points {
-                            let attrs: Vec<KeyValue> = dp.attributes.iter()
+                            let attrs: Vec<KeyValue> = dp
+                                .attributes
+                                .iter()
                                 .map(|(k, v)| KeyValue::new(k.clone(), v.clone()))
                                 .collect();
                             observer.observe(dp.value, &attrs);
@@ -167,7 +179,9 @@ pub async fn run_otel_exporter(
                 for metric in reg.get_otel_metrics() {
                     if metric.name == "kafka_consumergroup_group_sum_lag" {
                         for dp in &metric.data_points {
-                            let attrs: Vec<KeyValue> = dp.attributes.iter()
+                            let attrs: Vec<KeyValue> = dp
+                                .attributes
+                                .iter()
                                 .map(|(k, v)| KeyValue::new(k.clone(), v.clone()))
                                 .collect();
                             observer.observe(dp.value, &attrs);
@@ -188,7 +202,9 @@ pub async fn run_otel_exporter(
                 for metric in reg.get_otel_metrics() {
                     if metric.name == "kafka_consumergroup_group_max_lag_seconds" {
                         for dp in &metric.data_points {
-                            let attrs: Vec<KeyValue> = dp.attributes.iter()
+                            let attrs: Vec<KeyValue> = dp
+                                .attributes
+                                .iter()
                                 .map(|(k, v)| KeyValue::new(k.clone(), v.clone()))
                                 .collect();
                             observer.observe(dp.value, &attrs);
@@ -209,7 +225,9 @@ pub async fn run_otel_exporter(
                 for metric in reg.get_otel_metrics() {
                     if metric.name == "kafka_consumergroup_group_topic_sum_lag" {
                         for dp in &metric.data_points {
-                            let attrs: Vec<KeyValue> = dp.attributes.iter()
+                            let attrs: Vec<KeyValue> = dp
+                                .attributes
+                                .iter()
                                 .map(|(k, v)| KeyValue::new(k.clone(), v.clone()))
                                 .collect();
                             observer.observe(dp.value, &attrs);
@@ -230,7 +248,9 @@ pub async fn run_otel_exporter(
                 for metric in reg.get_otel_metrics() {
                     if metric.name == "kafka_consumergroup_poll_time_ms" {
                         for dp in &metric.data_points {
-                            let attrs: Vec<KeyValue> = dp.attributes.iter()
+                            let attrs: Vec<KeyValue> = dp
+                                .attributes
+                                .iter()
                                 .map(|(k, v)| KeyValue::new(k.clone(), v.clone()))
                                 .collect();
                             observer.observe(dp.value, &attrs);
@@ -251,7 +271,9 @@ pub async fn run_otel_exporter(
                 for metric in reg.get_otel_metrics() {
                     if metric.name == "kafka_lag_exporter_scrape_duration_seconds" {
                         for dp in &metric.data_points {
-                            let attrs: Vec<KeyValue> = dp.attributes.iter()
+                            let attrs: Vec<KeyValue> = dp
+                                .attributes
+                                .iter()
                                 .map(|(k, v)| KeyValue::new(k.clone(), v.clone()))
                                 .collect();
                             observer.observe(dp.value, &attrs);
@@ -271,7 +293,9 @@ pub async fn run_otel_exporter(
                 for metric in reg.get_otel_metrics() {
                     if metric.name == "kafka_lag_exporter_up" {
                         for dp in &metric.data_points {
-                            let attrs: Vec<KeyValue> = dp.attributes.iter()
+                            let attrs: Vec<KeyValue> = dp
+                                .attributes
+                                .iter()
                                 .map(|(k, v)| KeyValue::new(k.clone(), v.clone()))
                                 .collect();
                             observer.observe(dp.value, &attrs);
@@ -296,7 +320,9 @@ pub async fn run_otel_exporter(
     Ok(())
 }
 
-fn init_meter_provider(config: &OtelConfig) -> std::result::Result<SdkMeterProvider, Box<dyn std::error::Error + Send + Sync>> {
+fn init_meter_provider(
+    config: &OtelConfig,
+) -> std::result::Result<SdkMeterProvider, Box<dyn std::error::Error + Send + Sync>> {
     use opentelemetry_sdk::metrics::PeriodicReader;
     use opentelemetry_sdk::runtime;
 
@@ -315,9 +341,10 @@ fn init_meter_provider(config: &OtelConfig) -> std::result::Result<SdkMeterProvi
     // Build the provider
     let provider = SdkMeterProvider::builder()
         .with_reader(reader)
-        .with_resource(Resource::new(vec![
-            KeyValue::new("service.name", "klag-exporter"),
-        ]))
+        .with_resource(Resource::new(vec![KeyValue::new(
+            "service.name",
+            "klag-exporter",
+        )]))
         .build();
 
     debug!(endpoint = %config.endpoint, "OpenTelemetry meter provider initialized");

@@ -32,15 +32,19 @@ pub const LABEL_RETENTION_DETECTED: &str = "retention_detected";
 pub const HELP_PARTITION_LATEST_OFFSET: &str = "Latest (high watermark) offset for a partition";
 pub const HELP_PARTITION_EARLIEST_OFFSET: &str = "Earliest (low watermark) offset for a partition";
 pub const HELP_GROUP_OFFSET: &str = "Last committed offset for a consumer group partition";
-pub const HELP_GROUP_LAG: &str = "Offset lag (high_watermark - committed) for a consumer group partition";
+pub const HELP_GROUP_LAG: &str =
+    "Offset lag (high_watermark - committed) for a consumer group partition";
 pub const HELP_GROUP_LAG_SECONDS: &str = "Time lag in seconds for a consumer group partition";
-pub const HELP_GROUP_MAX_LAG: &str = "Maximum offset lag across all partitions for a consumer group";
-pub const HELP_GROUP_MAX_LAG_SECONDS: &str = "Maximum time lag in seconds across all partitions for a consumer group";
+pub const HELP_GROUP_MAX_LAG: &str =
+    "Maximum offset lag across all partitions for a consumer group";
+pub const HELP_GROUP_MAX_LAG_SECONDS: &str =
+    "Maximum time lag in seconds across all partitions for a consumer group";
 pub const HELP_GROUP_SUM_LAG: &str = "Sum of offset lag across all partitions for a consumer group";
 pub const HELP_GROUP_TOPIC_SUM_LAG: &str = "Sum of offset lag per topic for a consumer group";
 pub const HELP_POLL_TIME_MS: &str = "Time taken to poll all offsets in milliseconds";
 pub const HELP_SCRAPE_DURATION_SECONDS: &str = "Duration of metrics collection in seconds";
 pub const HELP_UP: &str = "1 if the exporter is healthy, 0 otherwise";
 pub const HELP_LAST_UPDATE_TIMESTAMP: &str = "Unix timestamp of last successful metrics collection";
-pub const HELP_COMPACTION_DETECTED: &str = "Number of partitions where log compaction was detected (time lag may be understated)";
+pub const HELP_COMPACTION_DETECTED: &str =
+    "Number of partitions where log compaction was detected (time lag may be understated)";
 pub const HELP_RETENTION_DETECTED: &str = "Number of partitions where retention deletion was detected (committed offset < low watermark, time lag may be understated)";
