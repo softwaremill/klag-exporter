@@ -154,7 +154,10 @@ jobs:
 
       - name: Extract version tag
         id: version
-        run: echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+        run: |
+          TAG=${GITHUB_REF#refs/tags/}
+          echo "tag=${TAG}" >> $GITHUB_OUTPUT
+          echo "tag_without_v=${TAG#v}" >> $GITHUB_OUTPUT
 
       - name: Checkout main branch
         run: |
@@ -163,7 +166,7 @@ jobs:
 
       - name: Update Helm chart values.yaml
         run: |
-          sed -i 's/tag: ".*"/tag: "${{ steps.version.outputs.tag }}"/' helm/klag-exporter/values.yaml
+          sed -i 's/tag: ".*"/tag: "${{ steps.version.outputs.tag_without_v }}"/' helm/klag-exporter/values.yaml
           cat helm/klag-exporter/values.yaml | grep -A 3 "^image:"
 
       - name: Commit and push updated values.yaml
@@ -174,6 +177,6 @@ jobs:
           if git diff --staged --quiet; then
             echo "No changes to commit"
           else
-            git commit -m "chore(helm): update image tag to ${{ steps.version.outputs.tag }}"
+            git commit -m "chore(helm): update image tag to ${{ steps.version.outputs.tag_without_v }}"
             git push origin main
           fi

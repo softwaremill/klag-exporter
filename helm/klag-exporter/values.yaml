@@ -1,9 +1,9 @@
 replicaCount: 1
 
 image:
-  repository: softwaremill/klag-exporter
+  repository: ghcr.io/softwaremill/klag-exporter
   pullPolicy: IfNotPresent
-  tag: "v0.1.4"
+  tag: "0.1.4"
 
 imagePullSecrets: []
 # This is to override the chart name.
