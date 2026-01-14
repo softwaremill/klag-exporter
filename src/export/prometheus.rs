@@ -48,7 +48,10 @@ mod tests {
                 lag: 10,
                 lag_seconds: Some(5.0),
                 compaction_detected: false,
-                retention_detected: false,
+                data_loss_detected: false,
+                messages_lost: 0,
+                retention_margin: 100,
+                lag_retention_ratio: 9.09,
             }],
             group_metrics: vec![GroupLagMetric {
                 cluster_name: "test".to_string(),
@@ -72,7 +75,7 @@ mod tests {
             }],
             poll_time_ms: 100,
             compaction_detected_count: 0,
-            retention_detected_count: 0,
+            data_loss_partition_count: 0,
         };
 
         registry.update("test", metrics);

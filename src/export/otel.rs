@@ -306,6 +306,97 @@ pub async fn run_otel_exporter(
         })
         .build();
 
+    let registry_clone = Arc::clone(&registry);
+    let _messages_lost = meter
+        .f64_observable_gauge("kafka_consumergroup_group_messages_lost")
+        .with_description("Number of messages deleted by retention before consumer processed them")
+        .with_callback({
+            let reg = Arc::clone(&registry_clone);
+            move |observer| {
+                for metric in reg.get_otel_metrics() {
+                    if metric.name == "kafka_consumergroup_group_messages_lost" {
+                        for dp in &metric.data_points {
+                            let attrs: Vec<KeyValue> = dp
+                                .attributes
+                                .iter()
+                                .map(|(k, v)| KeyValue::new(k.clone(), v.clone()))
+                                .collect();
+                            observer.observe(dp.value, &attrs);
+                        }
+                    }
+                }
+            }
+        })
+        .build();
+
+    let registry_clone = Arc::clone(&registry);
+    let _retention_margin = meter
+        .f64_observable_gauge("kafka_consumergroup_group_retention_margin")
+        .with_description("Offset distance between consumer position and deletion boundary")
+        .with_callback({
+            let reg = Arc::clone(&registry_clone);
+            move |observer| {
+                for metric in reg.get_otel_metrics() {
+                    if metric.name == "kafka_consumergroup_group_retention_margin" {
+                        for dp in &metric.data_points {
+                            let attrs: Vec<KeyValue> = dp
+                                .attributes
+                                .iter()
+                                .map(|(k, v)| KeyValue::new(k.clone(), v.clone()))
+                                .collect();
+                            observer.observe(dp.value, &attrs);
+                        }
+                    }
+                }
+            }
+        })
+        .build();
+
+    let registry_clone = Arc::clone(&registry);
+    let _lag_retention_ratio = meter
+        .f64_observable_gauge("kafka_consumergroup_group_lag_retention_ratio")
+        .with_description("Percentage of retention window occupied by consumer lag")
+        .with_callback({
+            let reg = Arc::clone(&registry_clone);
+            move |observer| {
+                for metric in reg.get_otel_metrics() {
+                    if metric.name == "kafka_consumergroup_group_lag_retention_ratio" {
+                        for dp in &metric.data_points {
+                            let attrs: Vec<KeyValue> = dp
+                                .attributes
+                                .iter()
+                                .map(|(k, v)| KeyValue::new(k.clone(), v.clone()))
+                                .collect();
+                            observer.observe(dp.value, &attrs);
+                        }
+                    }
+                }
+            }
+        })
+        .build();
+
+    let _data_loss_partitions = meter
+        .f64_observable_gauge("kafka_lag_exporter_data_loss_partitions_total")
+        .with_description("Number of partitions where data loss occurred")
+        .with_callback({
+            let reg = Arc::clone(&registry);
+            move |observer| {
+                for metric in reg.get_otel_metrics() {
+                    if metric.name == "kafka_lag_exporter_data_loss_partitions_total" {
+                        for dp in &metric.data_points {
+                            let attrs: Vec<KeyValue> = dp
+                                .attributes
+                                .iter()
+                                .map(|(k, v)| KeyValue::new(k.clone(), v.clone()))
+                                .collect();
+                            observer.observe(dp.value, &attrs);
+                        }
+                    }
+                }
+            }
+        })
+        .build();
+
     info!("OpenTelemetry metrics registered, waiting for shutdown...");
 
     // Wait for shutdown signal

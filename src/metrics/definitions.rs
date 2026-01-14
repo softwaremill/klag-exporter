@@ -17,7 +17,12 @@ pub const METRIC_SCRAPE_DURATION_SECONDS: &str = "kafka_lag_exporter_scrape_dura
 pub const METRIC_UP: &str = "kafka_lag_exporter_up";
 pub const METRIC_LAST_UPDATE_TIMESTAMP: &str = "kafka_lag_exporter_last_update_timestamp_seconds";
 pub const METRIC_COMPACTION_DETECTED: &str = "kafka_lag_exporter_compaction_detected_total";
-pub const METRIC_RETENTION_DETECTED: &str = "kafka_lag_exporter_retention_detected_total";
+pub const METRIC_DATA_LOSS_PARTITIONS: &str = "kafka_lag_exporter_data_loss_partitions_total";
+
+// Data loss metrics (per partition)
+pub const METRIC_MESSAGES_LOST: &str = "kafka_consumergroup_group_messages_lost";
+pub const METRIC_RETENTION_MARGIN: &str = "kafka_consumergroup_group_retention_margin";
+pub const METRIC_LAG_RETENTION_RATIO: &str = "kafka_consumergroup_group_lag_retention_ratio";
 
 pub const LABEL_CLUSTER_NAME: &str = "cluster_name";
 pub const LABEL_GROUP: &str = "group";
@@ -27,7 +32,7 @@ pub const LABEL_MEMBER_HOST: &str = "member_host";
 pub const LABEL_CONSUMER_ID: &str = "consumer_id";
 pub const LABEL_CLIENT_ID: &str = "client_id";
 pub const LABEL_COMPACTION_DETECTED: &str = "compaction_detected";
-pub const LABEL_RETENTION_DETECTED: &str = "retention_detected";
+pub const LABEL_DATA_LOSS_DETECTED: &str = "data_loss_detected";
 
 pub const HELP_PARTITION_LATEST_OFFSET: &str = "Latest (high watermark) offset for a partition";
 pub const HELP_PARTITION_EARLIEST_OFFSET: &str = "Earliest (low watermark) offset for a partition";
@@ -47,4 +52,11 @@ pub const HELP_UP: &str = "1 if the exporter is healthy, 0 otherwise";
 pub const HELP_LAST_UPDATE_TIMESTAMP: &str = "Unix timestamp of last successful metrics collection";
 pub const HELP_COMPACTION_DETECTED: &str =
     "Number of partitions where log compaction was detected (time lag may be understated)";
-pub const HELP_RETENTION_DETECTED: &str = "Number of partitions where retention deletion was detected (committed offset < low watermark, time lag may be understated)";
+pub const HELP_DATA_LOSS_PARTITIONS: &str =
+    "Number of partitions where data loss occurred (committed offset < low watermark)";
+pub const HELP_MESSAGES_LOST: &str =
+    "Number of messages deleted by retention before consumer processed them";
+pub const HELP_RETENTION_MARGIN: &str =
+    "Offset distance between consumer position and deletion boundary (committed_offset - low_watermark, negative means data loss)";
+pub const HELP_LAG_RETENTION_RATIO: &str =
+    "Percentage of retention window occupied by consumer lag (0=caught up, 100=at boundary, >100=data loss)";

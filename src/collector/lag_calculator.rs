@@ -13,8 +13,8 @@ pub struct LagMetrics {
     pub poll_time_ms: u64,
     /// Number of partitions where log compaction was detected
     pub compaction_detected_count: u64,
-    /// Number of partitions where retention deletion was detected
-    pub retention_detected_count: u64,
+    /// Number of partitions where data loss occurred (committed offset < low watermark)
+    pub data_loss_partition_count: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -31,8 +31,14 @@ pub struct PartitionLagMetric {
     pub lag_seconds: Option<f64>,
     /// Whether compaction was detected for this partition's timestamp fetch
     pub compaction_detected: bool,
-    /// Whether retention deletion was detected (committed_offset < low_watermark)
-    pub retention_detected: bool,
+    /// Whether data loss occurred (committed_offset < low_watermark)
+    pub data_loss_detected: bool,
+    /// Number of messages lost to retention (low_watermark - committed_offset when positive)
+    pub messages_lost: i64,
+    /// Offset distance to deletion boundary (committed_offset - low_watermark)
+    pub retention_margin: i64,
+    /// Percentage of retention window occupied by lag (0=caught up, 100=at boundary, >100=data loss)
+    pub lag_retention_ratio: f64,
 }
 
 #[derive(Debug, Clone)]
@@ -111,8 +117,24 @@ impl LagCalculator {
                 // Calculate lag, clamped to 0 for race conditions
                 let lag = (high_watermark - committed_offset).max(0);
 
-                // Detect retention deletion: committed offset is before the low watermark
-                let retention_detected = *committed_offset < low_watermark;
+                // Data loss detection: committed offset is before the low watermark
+                let data_loss_detected = *committed_offset < low_watermark;
+                let messages_lost = if data_loss_detected {
+                    low_watermark - *committed_offset
+                } else {
+                    0
+                };
+
+                // Prevention metrics
+                let retention_margin = *committed_offset - low_watermark; // negative if data loss
+
+                let retention_window = high_watermark - low_watermark;
+                let lag_retention_ratio = if retention_window > 0 {
+                    let current_lag = high_watermark - *committed_offset;
+                    (current_lag as f64 / retention_window as f64) * 100.0
+                } else {
+                    0.0 // empty partition, no ratio
+                };
 
                 // Look up member info for this partition
                 let (member_host, consumer_id, client_id) = member_map
@@ -132,9 +154,9 @@ impl LagCalculator {
                     ts_data
                         .map(|td| ((now_ms - td.timestamp_ms) as f64) / 1000.0)
                         .map(|s| s.max(0.0))
-                        // For retention-affected partitions without timestamp, still emit metric
-                        // so it shows up in dashboards with retention_detected label
-                        .or(if retention_detected { Some(0.0) } else { None })
+                        // For data-loss-affected partitions without timestamp, still emit metric
+                        // so it shows up in dashboards with data_loss_detected label
+                        .or(if data_loss_detected { Some(0.0) } else { None })
                 } else {
                     Some(0.0)
                 };
@@ -153,7 +175,10 @@ impl LagCalculator {
                     lag,
                     lag_seconds,
                     compaction_detected,
-                    retention_detected,
+                    data_loss_detected,
+                    messages_lost,
+                    retention_margin,
+                    lag_retention_ratio,
                 });
 
                 // Update aggregates
@@ -192,14 +217,14 @@ impl LagCalculator {
             }
         }
 
-        // Count compaction and retention detections from partition metrics
+        // Count compaction and data loss detections from partition metrics
         let compaction_detected_count = partition_metrics
             .iter()
             .filter(|m| m.compaction_detected)
             .count() as u64;
-        let retention_detected_count = partition_metrics
+        let data_loss_partition_count = partition_metrics
             .iter()
-            .filter(|m| m.retention_detected)
+            .filter(|m| m.data_loss_detected)
             .count() as u64;
 
         LagMetrics {
@@ -210,7 +235,7 @@ impl LagCalculator {
             partition_offsets,
             poll_time_ms,
             compaction_detected_count,
-            retention_detected_count,
+            data_loss_partition_count,
         }
     }
 }

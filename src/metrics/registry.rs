@@ -1,17 +1,19 @@
 use crate::collector::lag_calculator::LagMetrics;
 use crate::config::Granularity;
 use crate::metrics::definitions::{
-    HELP_COMPACTION_DETECTED, HELP_GROUP_LAG, HELP_GROUP_LAG_SECONDS, HELP_GROUP_MAX_LAG,
-    HELP_GROUP_MAX_LAG_SECONDS, HELP_GROUP_OFFSET, HELP_GROUP_SUM_LAG, HELP_GROUP_TOPIC_SUM_LAG,
-    HELP_LAST_UPDATE_TIMESTAMP, HELP_PARTITION_EARLIEST_OFFSET, HELP_PARTITION_LATEST_OFFSET,
-    HELP_POLL_TIME_MS, HELP_RETENTION_DETECTED, HELP_SCRAPE_DURATION_SECONDS, HELP_UP,
-    LABEL_CLIENT_ID, LABEL_CLUSTER_NAME, LABEL_COMPACTION_DETECTED, LABEL_CONSUMER_ID, LABEL_GROUP,
-    LABEL_MEMBER_HOST, LABEL_PARTITION, LABEL_RETENTION_DETECTED, LABEL_TOPIC,
-    METRIC_COMPACTION_DETECTED, METRIC_GROUP_LAG, METRIC_GROUP_LAG_SECONDS, METRIC_GROUP_MAX_LAG,
-    METRIC_GROUP_MAX_LAG_SECONDS, METRIC_GROUP_OFFSET, METRIC_GROUP_SUM_LAG,
-    METRIC_GROUP_TOPIC_SUM_LAG, METRIC_LAST_UPDATE_TIMESTAMP, METRIC_PARTITION_EARLIEST_OFFSET,
-    METRIC_PARTITION_LATEST_OFFSET, METRIC_POLL_TIME_MS, METRIC_RETENTION_DETECTED,
-    METRIC_SCRAPE_DURATION_SECONDS, METRIC_UP,
+    HELP_COMPACTION_DETECTED, HELP_DATA_LOSS_PARTITIONS, HELP_GROUP_LAG, HELP_GROUP_LAG_SECONDS,
+    HELP_GROUP_MAX_LAG, HELP_GROUP_MAX_LAG_SECONDS, HELP_GROUP_OFFSET, HELP_GROUP_SUM_LAG,
+    HELP_GROUP_TOPIC_SUM_LAG, HELP_LAG_RETENTION_RATIO, HELP_LAST_UPDATE_TIMESTAMP,
+    HELP_MESSAGES_LOST, HELP_PARTITION_EARLIEST_OFFSET, HELP_PARTITION_LATEST_OFFSET,
+    HELP_POLL_TIME_MS, HELP_RETENTION_MARGIN, HELP_SCRAPE_DURATION_SECONDS, HELP_UP,
+    LABEL_CLIENT_ID, LABEL_CLUSTER_NAME, LABEL_COMPACTION_DETECTED, LABEL_CONSUMER_ID,
+    LABEL_DATA_LOSS_DETECTED, LABEL_GROUP, LABEL_MEMBER_HOST, LABEL_PARTITION, LABEL_TOPIC,
+    METRIC_COMPACTION_DETECTED, METRIC_DATA_LOSS_PARTITIONS, METRIC_GROUP_LAG,
+    METRIC_GROUP_LAG_SECONDS, METRIC_GROUP_MAX_LAG, METRIC_GROUP_MAX_LAG_SECONDS,
+    METRIC_GROUP_OFFSET, METRIC_GROUP_SUM_LAG, METRIC_GROUP_TOPIC_SUM_LAG,
+    METRIC_LAG_RETENTION_RATIO, METRIC_LAST_UPDATE_TIMESTAMP, METRIC_MESSAGES_LOST,
+    METRIC_PARTITION_EARLIEST_OFFSET, METRIC_PARTITION_LATEST_OFFSET, METRIC_POLL_TIME_MS,
+    METRIC_RETENTION_MARGIN, METRIC_SCRAPE_DURATION_SECONDS, METRIC_UP,
 };
 use crate::metrics::types::{Labels, MetricPoint, OtelDataPoint, OtelMetric};
 use dashmap::DashMap;
@@ -128,22 +130,51 @@ impl MetricsRegistry {
                     ));
 
                     if let Some(lag_seconds) = m.lag_seconds {
-                        // Add compaction_detected and retention_detected labels to lag_seconds metric
+                        // Add compaction_detected and data_loss_detected labels to lag_seconds metric
                         labels.insert(
                             LABEL_COMPACTION_DETECTED.to_string(),
                             m.compaction_detected.to_string(),
                         );
                         labels.insert(
-                            LABEL_RETENTION_DETECTED.to_string(),
-                            m.retention_detected.to_string(),
+                            LABEL_DATA_LOSS_DETECTED.to_string(),
+                            m.data_loss_detected.to_string(),
                         );
                         points.push(MetricPoint::gauge(
                             METRIC_GROUP_LAG_SECONDS,
-                            labels,
+                            labels.clone(),
                             lag_seconds,
                             HELP_GROUP_LAG_SECONDS,
                         ));
                     }
+
+                    // Data loss metrics (per partition)
+                    let mut data_loss_labels = Labels::new();
+                    data_loss_labels.insert(LABEL_CLUSTER_NAME.to_string(), m.cluster_name.clone());
+                    data_loss_labels.insert(LABEL_GROUP.to_string(), m.group_id.clone());
+                    data_loss_labels.insert(LABEL_TOPIC.to_string(), m.topic.clone());
+                    data_loss_labels.insert(LABEL_PARTITION.to_string(), m.partition.to_string());
+                    add_custom_labels(&mut data_loss_labels);
+
+                    points.push(MetricPoint::gauge(
+                        METRIC_MESSAGES_LOST,
+                        data_loss_labels.clone(),
+                        m.messages_lost as f64,
+                        HELP_MESSAGES_LOST,
+                    ));
+
+                    points.push(MetricPoint::gauge(
+                        METRIC_RETENTION_MARGIN,
+                        data_loss_labels.clone(),
+                        m.retention_margin as f64,
+                        HELP_RETENTION_MARGIN,
+                    ));
+
+                    points.push(MetricPoint::gauge(
+                        METRIC_LAG_RETENTION_RATIO,
+                        data_loss_labels,
+                        m.lag_retention_ratio,
+                        HELP_LAG_RETENTION_RATIO,
+                    ));
                 }
             }
             Granularity::Topic => {
@@ -217,12 +248,12 @@ impl MetricsRegistry {
             HELP_COMPACTION_DETECTED,
         ));
 
-        // Retention detected metric
+        // Data loss partitions metric
         points.push(MetricPoint::gauge(
-            METRIC_RETENTION_DETECTED,
+            METRIC_DATA_LOSS_PARTITIONS,
             poll_labels,
-            lag_metrics.retention_detected_count as f64,
-            HELP_RETENTION_DETECTED,
+            lag_metrics.data_loss_partition_count as f64,
+            HELP_DATA_LOSS_PARTITIONS,
         ));
 
         // Store metrics and update timestamps
@@ -516,7 +547,10 @@ mod tests {
                 lag: 10,
                 lag_seconds: Some(5.5),
                 compaction_detected: false,
-                retention_detected: false,
+                data_loss_detected: false,
+                messages_lost: 0,
+                retention_margin: 100,
+                lag_retention_ratio: 9.09,
             }],
             group_metrics: vec![GroupLagMetric {
                 cluster_name: "test-cluster".to_string(),
@@ -540,7 +574,7 @@ mod tests {
             }],
             poll_time_ms: 50,
             compaction_detected_count: 0,
-            retention_detected_count: 0,
+            data_loss_partition_count: 0,
         }
     }
 
