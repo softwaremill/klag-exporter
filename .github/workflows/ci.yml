@@ -34,6 +34,7 @@ jobs:
           components: clippy
       - name: Install dependencies
         run: |
+          sudo rm -f /etc/apt/sources.list.d/microsoft-prod.list /etc/apt/sources.list.d/azure-cli.list
           sudo apt-get update
           sudo apt-get install -y cmake libssl-dev libsasl2-dev pkg-config
       - uses: Swatinem/rust-cache@v2
@@ -47,6 +48,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Install dependencies
         run: |
+          sudo rm -f /etc/apt/sources.list.d/microsoft-prod.list /etc/apt/sources.list.d/azure-cli.list
           sudo apt-get update
           sudo apt-get install -y cmake libssl-dev libsasl2-dev pkg-config
       - uses: Swatinem/rust-cache@v2
@@ -60,6 +62,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Install dependencies
         run: |
+          sudo rm -f /etc/apt/sources.list.d/microsoft-prod.list /etc/apt/sources.list.d/azure-cli.list
           sudo apt-get update
           sudo apt-get install -y cmake libssl-dev libsasl2-dev pkg-config
       - uses: Swatinem/rust-cache@v2
