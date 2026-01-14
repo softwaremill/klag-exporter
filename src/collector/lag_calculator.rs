@@ -119,11 +119,7 @@ impl LagCalculator {
 
                 // Data loss detection: committed offset is before the low watermark
                 let data_loss_detected = *committed_offset < low_watermark;
-                let messages_lost = if data_loss_detected {
-                    low_watermark - *committed_offset
-                } else {
-                    0
-                };
+                let messages_lost = (low_watermark - *committed_offset).max(0);
 
                 // Prevention metrics
                 let retention_margin = *committed_offset - low_watermark; // negative if data loss
