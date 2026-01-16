@@ -1,3 +1,18 @@
 [workspace]
 dependencies_update = true
 pr_labels = ["release"]
+
+[changelog]
+commit_parsers = [
+    { footer = "^changelog: ?ignore", skip = true },
+    { message = "^feat", group = "added" },
+    { message = "^changed", group = "changed" },
+    { message = "^deprecated", group = "deprecated" },
+    { message = "^fix", group = "fixed" },
+    { message = "^security", group = "security" },
+    { message = "^refactor", skip = true },
+    { message = "^release", skip = true },
+    { message = "^chore", skip = true },
+    { message = "^ci", skip = true },
+    { message = "^.*", group = "other" },
+]
