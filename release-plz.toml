@@ -4,9 +4,9 @@ pr_labels = ["release"]
 
 [changelog]
 commit_parsers = [
-    { footer = "^changelog: ?ignore", skip = true },
+    { footer = "^Changelog: ?ignore", skip = true },
+    { footer = "^Changelog: ?changed", group = "changed" },
     { message = "^feat", group = "added" },
-    { message = "^changed", group = "changed" },
     { message = "^deprecated", group = "deprecated" },
     { message = "^fix", group = "fixed" },
     { message = "^security", group = "security" },
