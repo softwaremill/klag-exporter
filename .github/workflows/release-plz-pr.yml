@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+  workflow_dispatch: # Allow manual trigger
 
 jobs:
   release-plz-release:
@@ -49,13 +50,19 @@ jobs:
         with:
           fetch-depth: 0
           token: ${{ secrets.RELEASE_PLZ_TOKEN }}
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+
       - name: Install system dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y cmake libssl-dev libsasl2-dev pkg-config
-      - name: Run release-plz
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Create Release PR
         uses: release-plz/action@v0.5
         with:
           command: release-pr
