@@ -99,8 +99,8 @@ The exporter detects retention deletion by comparing committed offset to low wat
 
 ```rust
 if committed_offset < low_watermark {
-    // Retention detected - committed offset fell off the log
-    retention_detected = true;
+    // Data loss detected - committed offset fell off the log
+    data_loss_detected = true;
 }
 ```
 
@@ -116,16 +116,28 @@ kafka_consumergroup_group_lag_seconds{
   topic="...",
   partition="...",
   compaction_detected="true",   # or "false"
-  retention_detected="false"    # or "true"
+  data_loss_detected="false"    # or "true"
 } 5.2
 ```
 
 Use these labels to identify exactly which partitions are affected and why.
 
+### Per-partition data loss metrics
+```
+kafka_consumergroup_group_messages_lost{...} 50        # Messages deleted before processing
+kafka_consumergroup_group_retention_margin{...} -50    # Negative = data loss occurred
+kafka_consumergroup_group_lag_retention_ratio{...} 120 # >100 = data loss
+```
+
+These metrics help detect and prevent data loss:
+- `messages_lost`: Count of messages deleted by retention before consumer processed them
+- `retention_margin`: Distance to deletion boundary (`committed_offset - low_watermark`). Negative means data loss.
+- `lag_retention_ratio`: Consumer lag as percentage of retention window. >100% indicates data loss.
+
 ### Cluster-wide counters
 ```
 kafka_lag_exporter_compaction_detected_total{cluster_name="..."} 3
-kafka_lag_exporter_retention_detected_total{cluster_name="..."} 1
+kafka_lag_exporter_data_loss_partitions_total{cluster_name="..."} 1
 ```
 
 Total count of partitions affected by each type of deletion in the last collection cycle.
@@ -154,14 +166,20 @@ The default dashboard in `test-stack/` focuses on core lag metrics. To monitor c
 # Count of partitions with compaction detected
 kafka_lag_exporter_compaction_detected_total{cluster_name="$cluster"}
 
-# Count of partitions with retention detected
-kafka_lag_exporter_retention_detected_total{cluster_name="$cluster"}
+# Count of partitions with data loss detected
+kafka_lag_exporter_data_loss_partitions_total{cluster_name="$cluster"}
 
 # Time lag for compacted partitions only
 kafka_consumergroup_group_lag_seconds{compaction_detected="true"}
 
-# Time lag for retention-affected partitions only
-kafka_consumergroup_group_lag_seconds{retention_detected="true"}
+# Time lag for data-loss-affected partitions only
+kafka_consumergroup_group_lag_seconds{data_loss_detected="true"}
+
+# Consumers approaching data loss (lag > 80% of retention window)
+kafka_consumergroup_group_lag_retention_ratio > 80
+
+# Messages already lost
+kafka_consumergroup_group_messages_lost > 0
 ```
 
 ## Recommendations
@@ -169,8 +187,9 @@ kafka_consumergroup_group_lag_seconds{retention_detected="true"}
 1. **For affected topics**: Rely more on offset lag than time lag
 2. **Alert on deletion events**: Set up alerts on:
    - `kafka_lag_exporter_compaction_detected_total > 0`
-   - `kafka_lag_exporter_retention_detected_total > 0`
-3. **Investigate root cause**: High detection counts may indicate:
+   - `kafka_lag_exporter_data_loss_partitions_total > 0`
+3. **Prevent data loss**: Monitor `lag_retention_ratio` approaching 100%
+4. **Investigate root cause**: High detection counts may indicate:
    - Consumer is very far behind
    - Aggressive compaction settings (`min.compaction.lag.ms` too low)
    - Short retention period (`retention.ms` too low)

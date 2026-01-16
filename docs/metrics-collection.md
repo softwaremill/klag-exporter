@@ -45,7 +45,8 @@ Klag Exporter collects metrics from Kafka clusters using the Kafka protocol dire
 **Used for metrics:**
 - `kafka_consumergroup_group_lag_seconds` - time lag per partition
 - `kafka_consumergroup_group_max_lag_seconds` - max time lag per group
-- `compaction_detected` and `retention_detected` labels
+- `compaction_detected` and `data_loss_detected` labels
+- Data loss metrics: `messages_lost`, `retention_margin`, `lag_retention_ratio`
 
 **How it works:**
 1. For each partition with lag > 0, we seek to the committed offset
@@ -187,7 +188,10 @@ datacenter = "us-east-1"
 | Metric | Description | Labels |
 |--------|-------------|--------|
 | `kafka_consumergroup_group_lag` | Offset lag for partition | cluster_name, group, topic, partition, member_host, consumer_id, client_id |
-| `kafka_consumergroup_group_lag_seconds` | Time lag in seconds | same + compaction_detected, retention_detected |
+| `kafka_consumergroup_group_lag_seconds` | Time lag in seconds | same + compaction_detected, data_loss_detected |
+| `kafka_consumergroup_group_messages_lost` | Messages deleted before processing | same as group_lag |
+| `kafka_consumergroup_group_retention_margin` | Offset distance to deletion boundary | same as group_lag |
+| `kafka_consumergroup_group_lag_retention_ratio` | Lag as % of retention window | same as group_lag |
 | `kafka_consumergroup_group_offset` | Committed offset | same as group_lag |
 
 ### Group-Level Metrics
@@ -211,7 +215,7 @@ datacenter = "us-east-1"
 | `kafka_partition_earliest_offset` | Low watermark | cluster_name, topic, partition |
 | `kafka_partition_latest_offset` | High watermark | cluster_name, topic, partition |
 | `kafka_lag_exporter_compaction_detected_total` | Partitions with compaction | cluster_name |
-| `kafka_lag_exporter_retention_detected_total` | Partitions with retention deletion | cluster_name |
+| `kafka_lag_exporter_data_loss_partitions_total` | Partitions with data loss | cluster_name |
 
 ### Exporter Health Metrics
 
@@ -258,11 +262,14 @@ When fetching a timestamp, if the returned message offset differs from the reque
 
 **Impact:** Time lag may be understated because we're measuring from a newer message, not the original one the consumer needs to process.
 
-### Retention Detection
+### Data Loss Detection
 
-If `committed_offset < low_watermark`, the committed offset points to a message that has been deleted by retention policy. This is flagged in the `retention_detected` label.
+If `committed_offset < low_watermark`, the committed offset points to a message that has been deleted by retention policy. This is flagged in the `data_loss_detected` label.
 
-**Impact:** Similar to compaction - time lag may be understated.
+**Impact:** Similar to compaction - time lag may be understated. Additionally, the following metrics quantify the data loss:
+- `messages_lost`: Number of messages deleted before consumer could process them
+- `retention_margin`: Distance to deletion boundary (negative when data loss occurred)
+- `lag_retention_ratio`: Consumer lag as percentage of retention window (>100% indicates data loss)
 
 See [compaction-detection.md](compaction-detection.md) for more details.
 
