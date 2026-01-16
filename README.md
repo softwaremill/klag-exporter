@@ -17,6 +17,7 @@ A high-performance Apache Kafka® consumer group lag exporter written in Rust. C
 
 - **Accurate Time Lag Calculation** — Directly reads message timestamps from Kafka® partitions instead of interpolating from lookup tables
 - **Compaction & Retention Detection** — Automatically detects when log compaction or retention deletion may affect time lag accuracy
+- **Data Loss Detection** — Detects and quantifies message loss when consumers fall behind retention, with metrics for prevention alerts
 - **Dual Export Support** — Native Prometheus HTTP endpoint (`/metrics`) and OpenTelemetry OTLP export
 - **Non-blocking Scrapes** — Continuous background collection with instant metric reads (no Kafka® calls during Prometheus scrapes)
 - **Multi-cluster Support** — Monitor multiple Kafka® clusters with independent collection loops and failure isolation
@@ -68,15 +69,82 @@ Both **log compaction** (`cleanup.policy=compact`) and **retention-based deletio
 **How it happens:** When a consumer's committed offset points to a deleted message, Kafka returns the next available message instead. This message has a later timestamp, making time lag appear smaller than reality.
 
 **Detection:** klag-exporter automatically detects these conditions and exposes:
-- `compaction_detected` and `retention_detected` labels on `kafka_consumergroup_group_lag_seconds`
-- `kafka_lag_exporter_compaction_detected_total` and `kafka_lag_exporter_retention_detected_total` counters
+- `compaction_detected` and `data_loss_detected` labels on `kafka_consumergroup_group_lag_seconds`
+- `kafka_lag_exporter_compaction_detected_total` and `kafka_lag_exporter_data_loss_partitions_total` counters
 
 **Recommendations:**
 - For affected partitions, rely more on offset lag than time lag
-- Alert on `kafka_lag_exporter_compaction_detected_total > 0` or `kafka_lag_exporter_retention_detected_total > 0`
+- Alert on `kafka_lag_exporter_compaction_detected_total > 0` or `kafka_lag_exporter_data_loss_partitions_total > 0`
 - Investigate if detection counts are high — may indicate very lagging consumers or aggressive compaction/retention settings
 
 See [docs/compaction-detection.md](docs/compaction-detection.md) for detailed technical explanation.
+
+### Data Loss Detection
+
+When a consumer falls too far behind, Kafka® retention policies may delete messages before they're processed. klag-exporter detects and quantifies this:
+
+**How it works:** Data loss occurs when a consumer group's committed offset falls below the partition's low watermark (earliest available offset). This means messages were deleted by retention before the consumer could process them.
+
+**Understanding `lag_retention_ratio`:**
+
+This metric shows what percentage of the available retention window is occupied by consumer lag:
+
+```
+                    current_lag
+lag_retention_ratio = ─────────────────── × 100
+                    retention_window
+
+where:
+  retention_window = high_watermark - low_watermark  (total offsets in partition)
+  current_lag      = high_watermark - committed_offset
+```
+
+| Ratio | Meaning |
+|-------|---------|
+| 0% | Consumer is caught up (no lag) |
+| 50% | Consumer lag equals half the retention window |
+| 100% | Consumer is at the deletion boundary — next retention cycle may cause data loss |
+| >100% | Data loss has already occurred |
+
+Example: If a partition has offsets 1000-2000 (retention window = 1000) and consumer is at offset 1200:
+- current_lag = 2000 - 1200 = 800
+- lag_retention_ratio = (800 / 1000) × 100 = **80%** — consumer is 80% of the way to data loss
+
+**Metrics provided:**
+
+| Metric | Description | Example Use |
+|--------|-------------|-------------|
+| `kafka_consumergroup_group_messages_lost` | Count of messages deleted before processing | Alert when > 0 |
+| `kafka_consumergroup_group_retention_margin` | Distance to deletion boundary | Alert when approaching 0 |
+| `kafka_consumergroup_group_lag_retention_ratio` | Lag as % of retention window | Alert when > 80% |
+| `data_loss_detected` label | Boolean flag on lag metrics | Filter affected partitions |
+
+**Prevention strategy:**
+- Set alerts on `retention_margin` approaching zero (e.g., < 10% of typical lag)
+- Monitor `lag_retention_ratio` — values approaching 100% indicate imminent data loss
+- Use `messages_lost > 0` for post-incident detection
+- Consider increasing topic retention or scaling consumers when ratios are high
+
+**Example Prometheus alerts:**
+
+```yaml
+# Imminent data loss warning
+- alert: KafkaConsumerNearDataLoss
+  expr: kafka_consumergroup_group_lag_retention_ratio > 80
+  for: 5m
+  labels:
+    severity: warning
+  annotations:
+    summary: "Consumer {{ $labels.group }} approaching retention boundary"
+
+# Data loss occurred
+- alert: KafkaConsumerDataLoss
+  expr: kafka_consumergroup_group_messages_lost > 0
+  labels:
+    severity: critical
+  annotations:
+    summary: "Consumer {{ $labels.group }} lost {{ $value }} messages"
+```
 
 ## Quick Start
 
@@ -194,7 +262,15 @@ Use `${VAR_NAME}` syntax in config values. The exporter will substitute with env
 |--------|--------|-------------|
 | `kafka_consumergroup_group_offset` | cluster_name, group, topic, partition, member_host, consumer_id, client_id | Committed offset |
 | `kafka_consumergroup_group_lag` | cluster_name, group, topic, partition, member_host, consumer_id, client_id | Offset lag |
-| `kafka_consumergroup_group_lag_seconds` | cluster_name, group, topic, partition, member_host, consumer_id, client_id | Time lag in seconds |
+| `kafka_consumergroup_group_lag_seconds` | cluster_name, group, topic, partition, member_host, consumer_id, client_id, compaction_detected, data_loss_detected | Time lag in seconds |
+
+### Data Loss Detection Metrics
+
+| Metric | Labels | Description |
+|--------|--------|-------------|
+| `kafka_consumergroup_group_messages_lost` | cluster_name, group, topic, partition, member_host, consumer_id, client_id | Messages deleted by retention before consumer processed them |
+| `kafka_consumergroup_group_retention_margin` | cluster_name, group, topic, partition, member_host, consumer_id, client_id | Offset distance to deletion boundary (negative = data loss) |
+| `kafka_consumergroup_group_lag_retention_ratio` | cluster_name, group, topic, partition, member_host, consumer_id, client_id | Percentage of retention window occupied by lag (>100 = data loss) |
 
 ### Consumer Group Aggregate Metrics
 
@@ -213,7 +289,7 @@ Use `${VAR_NAME}` syntax in config values. The exporter will substitute with env
 | `kafka_lag_exporter_scrape_duration_seconds` | cluster_name | Collection cycle duration |
 | `kafka_lag_exporter_up` | — | 1 if healthy, 0 otherwise |
 | `kafka_lag_exporter_compaction_detected_total` | cluster_name | Partitions where log compaction was detected |
-| `kafka_lag_exporter_retention_detected_total` | cluster_name | Partitions where retention deletion was detected |
+| `kafka_lag_exporter_data_loss_partitions_total` | cluster_name | Partitions where data loss occurred (committed offset < low watermark) |
 
 ## HTTP Endpoints
 
