@@ -73,6 +73,7 @@ jobs:
       - name: Update Helm chart values.yaml
         run: |
           sed -i 's/tag: ".*"/tag: "'$RELEASE_VERSION'"/' helm/klag-exporter/values.yaml
+          sed -i 's/tag: ".*"/tag: "'$RELEASE_VERSION'"/' helm/klag-exporter/Chart.yaml
           cat helm/klag-exporter/values.yaml | grep -A 3 "^image:"
 
       - name: Commit and push updated values.yaml to release branch

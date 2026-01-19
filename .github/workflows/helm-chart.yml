@@ -70,6 +70,11 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Extract chart version
+        id: chart_version
+        run: |
+          echo "version=$(grep '^version:' ${{ env.CHART_PATH }}/Chart.yaml | awk '{print $2}')" >> $GITHUB_OUTPUT
+
       - name: Push chart to OCI registry
         run: |
-          helm push /tmp/klag-exporter-${{ steps.bump_version.outputs.version }}.tgz oci://${{ env.REGISTRY }}/${{ github.repository_owner }}/helm
+          helm push /tmp/klag-exporter-${{ steps.chart_version.outputs.version }}.tgz oci://${{ env.REGISTRY }}/${{ github.repository_owner }}/helm

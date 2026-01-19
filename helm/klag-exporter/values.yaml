@@ -3,7 +3,7 @@ replicaCount: 1
 image:
   repository: ghcr.io/softwaremill/klag-exporter
   pullPolicy: IfNotPresent
-  tag: "0.1.6"
+  tag: "0.1.10"
 
 imagePullSecrets: []
 # This is to override the chart name.
@@ -73,18 +73,18 @@ httpRoute:
   annotations: {}
   # Which Gateways this Route is attached to.
   parentRefs:
-  - name: gateway
-    sectionName: http
-    # namespace: default
+    - name: gateway
+      sectionName: http
+      # namespace: default
   # Hostnames matching HTTP header.
   hostnames:
-  - chart-example.local
+    - chart-example.local
   # List of rules and filters applied.
   rules:
-  - matches:
-    - path:
-        type: PathPrefix
-        value: /headers
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /headers
   #   filters:
   #   - type: RequestHeaderModifier
   #     requestHeaderModifier:
@@ -139,7 +139,7 @@ config:
       group_whitelist: [".*"]
       group_blacklist: []
       topic_whitelist: [".*"]
-      topic_blacklist: ["^__.*"]  # Exclude internal topics like __consumer_offsets
+      topic_blacklist: ["^__.*"] # Exclude internal topics like __consumer_offsets
       clusters.consumer_properties: {}
       # Any valid consumer property can be set here, for example:
       # security.protocol: "SASL_SSL"
