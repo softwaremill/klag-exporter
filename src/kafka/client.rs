@@ -105,6 +105,10 @@ impl KafkaClient {
         &self.config.name
     }
 
+    pub fn consumer_properties(&self) -> &std::collections::HashMap<String, String> {
+        &self.config.consumer_properties
+    }
+
     #[instrument(skip(self), fields(cluster = %self.config.name))]
     pub fn list_consumer_groups(&self) -> Result<Vec<ConsumerGroupInfo>> {
         let group_list: GroupList = self
