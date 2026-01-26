@@ -24,13 +24,13 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.RELEASE_PLZ_TOKEN }}
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.93
-
       - name: Install system dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y cmake build-essential libssl-dev libsasl2-dev zlib1g-dev libzstd-dev liblz4-dev pkg-config jq
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.93
 
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
