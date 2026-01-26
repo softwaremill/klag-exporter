@@ -41,7 +41,7 @@ jobs:
         run: |
           sudo rm -f /etc/apt/sources.list.d/microsoft-prod.list /etc/apt/sources.list.d/azure-cli.list
           sudo apt-get update
-          sudo apt-get install -y cmake libssl-dev libsasl2-dev pkg-config
+          sudo apt-get install -y cmake libssl-dev libsasl2-dev zlib1g-dev libzstd-dev liblz4-dev pkg-config
 
       - uses: Swatinem/rust-cache@v2
 

@@ -30,7 +30,7 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake libssl-dev libsasl2-dev pkg-config
+          sudo apt-get install -y cmake libssl-dev libsasl2-dev zlib1g-dev libzstd-dev liblz4-dev pkg-config
 
       - name: Run release-plz
         uses: release-plz/action@v0.5
