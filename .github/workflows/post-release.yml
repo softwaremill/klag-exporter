@@ -44,7 +44,16 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      - uses: Swatinem/rust-cache@v2
+      - name: Rust version
+        id: rust_version
+        run: echo "version=$(rustc --version | awk '{print $2}')" >> $GITHUB_OUTPUT
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ runner.os }}-cargo-${{ steps.rust_version.outputs.version }}-${{ matrix.target }}-${{ github.event.release.tag_name }}-${{ hashFiles('**/Cargo.lock') }}
+          cache-targets: true
+          cache-on-failure: true
 
       - name: Build
         run: cargo build --release --target ${{ matrix.target }}

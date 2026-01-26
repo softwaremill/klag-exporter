@@ -32,8 +32,16 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@1.93
 
+      - name: Rust version
+        id: rust_version
+        run: echo "version=$(rustc --version | awk '{print $2}')" >> $GITHUB_OUTPUT
+
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ runner.os }}-cargo-${{ steps.rust_version.outputs.version }}-${{ github.ref_name }}-${{ hashFiles('**/Cargo.lock') }}
+          cache-targets: true
+          cache-on-failure: true
 
       - name: Create Release PR
         id: release_plz
