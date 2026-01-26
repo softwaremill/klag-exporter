@@ -105,7 +105,7 @@ impl KafkaClient {
         &self.config.name
     }
 
-    pub fn consumer_properties(&self) -> &std::collections::HashMap<String, String> {
+    pub fn consumer_properties(&self) -> &HashMap<String, String> {
         &self.config.consumer_properties
     }
 
