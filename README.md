@@ -33,25 +33,27 @@ A high-performance Apache Kafka® consumer group lag exporter written in Rust. C
 
 ### Comparison with Existing Solutions
 
-| Feature | klag-exporter | kafka-lag-exporter | KMinion |
-|---------|---------------|-------------------|---------|
-| **Language** | Rust | Scala (JVM) | Go |
-| **Time Lag** | Direct timestamp reading | Interpolation from lookup table | Offset-only (requires PromQL) |
-| **Idle Producer Handling** | Shows actual message age | Shows 0 (interpolation fails) | N/A |
-| **Memory Usage** | ~20-50 MB | ~200-500 MB (JVM) | ~50-100 MB |
-| **Startup Time** | < 1 second | 5-15 seconds (JVM warmup) | < 1 second |
-| **OpenTelemetry** | Native OTLP | No | No |
-| **Blocking Scrapes** | No | No | Yes |
+| Feature                    | klag-exporter            | kafka-lag-exporter              | KMinion                       |
+| -------------------------- | ------------------------ | ------------------------------- | ----------------------------- |
+| **Language**               | Rust                     | Scala (JVM)                     | Go                            |
+| **Time Lag**               | Direct timestamp reading | Interpolation from lookup table | Offset-only (requires PromQL) |
+| **Idle Producer Handling** | Shows actual message age | Shows 0 (interpolation fails)   | N/A                           |
+| **Memory Usage**           | ~20-50 MB                | ~200-500 MB (JVM)               | ~50-100 MB                    |
+| **Startup Time**           | < 1 second               | 5-15 seconds (JVM warmup)       | < 1 second                    |
+| **OpenTelemetry**          | Native OTLP              | No                              | No                            |
+| **Blocking Scrapes**       | No                       | No                              | Yes                           |
 
 ### Time Lag Accuracy
 
 **Problem with interpolation (kafka-lag-exporter):**
+
 - Builds a lookup table of (offset, timestamp) pairs over time
 - Interpolates to estimate lag — breaks when producers stop sending
 - Shows 0 lag incorrectly for idle topics
 - Requires many poll cycles to build accurate tables
 
 **Our approach (targeted timestamp sampling):**
+
 - Seeks directly to the consumer group's committed offset
 - Reads actual message timestamp — always accurate
 - Handles idle producers correctly (shows true message age)
@@ -61,18 +63,20 @@ A high-performance Apache Kafka® consumer group lag exporter written in Rust. C
 
 Both **log compaction** (`cleanup.policy=compact`) and **retention-based deletion** can affect time lag accuracy:
 
-| Scenario | Effect on Offset Lag | Effect on Time Lag |
-|----------|---------------------|-------------------|
-| **Compaction** | Inflated (some offsets no longer exist) | Understated (reads newer message) |
-| **Retention** | Inflated (deleted messages still counted) | Understated (reads newer message) |
+| Scenario       | Effect on Offset Lag                      | Effect on Time Lag                |
+| -------------- | ----------------------------------------- | --------------------------------- |
+| **Compaction** | Inflated (some offsets no longer exist)   | Understated (reads newer message) |
+| **Retention**  | Inflated (deleted messages still counted) | Understated (reads newer message) |
 
 **How it happens:** When a consumer's committed offset points to a deleted message, Kafka returns the next available message instead. This message has a later timestamp, making time lag appear smaller than reality.
 
 **Detection:** klag-exporter automatically detects these conditions and exposes:
+
 - `compaction_detected` and `data_loss_detected` labels on `kafka_consumergroup_group_lag_seconds`
 - `kafka_lag_exporter_compaction_detected_total` and `kafka_lag_exporter_data_loss_partitions_total` counters
 
 **Recommendations:**
+
 - For affected partitions, rely more on offset lag than time lag
 - Alert on `kafka_lag_exporter_compaction_detected_total > 0` or `kafka_lag_exporter_data_loss_partitions_total > 0`
 - Investigate if detection counts are high — may indicate very lagging consumers or aggressive compaction/retention settings
@@ -99,27 +103,29 @@ where:
   current_lag      = high_watermark - committed_offset
 ```
 
-| Ratio | Meaning |
-|-------|---------|
-| 0% | Consumer is caught up (no lag) |
-| 50% | Consumer lag equals half the retention window |
-| 100% | Consumer is at the deletion boundary — next retention cycle may cause data loss |
-| >100% | Data loss has already occurred |
+| Ratio | Meaning                                                                         |
+| ----- | ------------------------------------------------------------------------------- |
+| 0%    | Consumer is caught up (no lag)                                                  |
+| 50%   | Consumer lag equals half the retention window                                   |
+| 100%  | Consumer is at the deletion boundary — next retention cycle may cause data loss |
+| >100% | Data loss has already occurred                                                  |
 
 Example: If a partition has offsets 1000-2000 (retention window = 1000) and consumer is at offset 1200:
+
 - current_lag = 2000 - 1200 = 800
 - lag_retention_ratio = (800 / 1000) × 100 = **80%** — consumer is 80% of the way to data loss
 
 **Metrics provided:**
 
-| Metric | Description | Example Use |
-|--------|-------------|-------------|
-| `kafka_consumergroup_group_messages_lost` | Count of messages deleted before processing | Alert when > 0 |
-| `kafka_consumergroup_group_retention_margin` | Distance to deletion boundary | Alert when approaching 0 |
-| `kafka_consumergroup_group_lag_retention_ratio` | Lag as % of retention window | Alert when > 80% |
-| `data_loss_detected` label | Boolean flag on lag metrics | Filter affected partitions |
+| Metric                                          | Description                                 | Example Use                |
+| ----------------------------------------------- | ------------------------------------------- | -------------------------- |
+| `kafka_consumergroup_group_messages_lost`       | Count of messages deleted before processing | Alert when > 0             |
+| `kafka_consumergroup_group_retention_margin`    | Distance to deletion boundary               | Alert when approaching 0   |
+| `kafka_consumergroup_group_lag_retention_ratio` | Lag as % of retention window                | Alert when > 80%           |
+| `data_loss_detected` label                      | Boolean flag on lag metrics                 | Filter affected partitions |
 
 **Prevention strategy:**
+
 - Set alerts on `retention_margin` approaching zero (e.g., < 10% of typical lag)
 - Monitor `lag_retention_ratio` — values approaching 100% indicate imminent data loss
 - Use `messages_lost > 0` for post-incident detection
@@ -251,55 +257,55 @@ Use `${VAR_NAME}` syntax in config values. The exporter will substitute with env
 
 ### Partition Offset Metrics
 
-| Metric | Labels | Description |
-|--------|--------|-------------|
-| `kafka_partition_latest_offset` | cluster_name, topic, partition | High watermark offset |
-| `kafka_partition_earliest_offset` | cluster_name, topic, partition | Low watermark offset |
+| Metric                            | Labels                         | Description           |
+| --------------------------------- | ------------------------------ | --------------------- |
+| `kafka_partition_latest_offset`   | cluster_name, topic, partition | High watermark offset |
+| `kafka_partition_earliest_offset` | cluster_name, topic, partition | Low watermark offset  |
 
 ### Consumer Group Metrics (Partition Level)
 
-| Metric | Labels | Description |
-|--------|--------|-------------|
-| `kafka_consumergroup_group_offset` | cluster_name, group, topic, partition, member_host, consumer_id, client_id | Committed offset |
-| `kafka_consumergroup_group_lag` | cluster_name, group, topic, partition, member_host, consumer_id, client_id | Offset lag |
+| Metric                                  | Labels                                                                                                              | Description         |
+| --------------------------------------- | ------------------------------------------------------------------------------------------------------------------- | ------------------- |
+| `kafka_consumergroup_group_offset`      | cluster_name, group, topic, partition, member_host, consumer_id, client_id                                          | Committed offset    |
+| `kafka_consumergroup_group_lag`         | cluster_name, group, topic, partition, member_host, consumer_id, client_id                                          | Offset lag          |
 | `kafka_consumergroup_group_lag_seconds` | cluster_name, group, topic, partition, member_host, consumer_id, client_id, compaction_detected, data_loss_detected | Time lag in seconds |
 
 ### Data Loss Detection Metrics
 
-| Metric | Labels | Description |
-|--------|--------|-------------|
-| `kafka_consumergroup_group_messages_lost` | cluster_name, group, topic, partition, member_host, consumer_id, client_id | Messages deleted by retention before consumer processed them |
-| `kafka_consumergroup_group_retention_margin` | cluster_name, group, topic, partition, member_host, consumer_id, client_id | Offset distance to deletion boundary (negative = data loss) |
+| Metric                                          | Labels                                                                     | Description                                                       |
+| ----------------------------------------------- | -------------------------------------------------------------------------- | ----------------------------------------------------------------- |
+| `kafka_consumergroup_group_messages_lost`       | cluster_name, group, topic, partition, member_host, consumer_id, client_id | Messages deleted by retention before consumer processed them      |
+| `kafka_consumergroup_group_retention_margin`    | cluster_name, group, topic, partition, member_host, consumer_id, client_id | Offset distance to deletion boundary (negative = data loss)       |
 | `kafka_consumergroup_group_lag_retention_ratio` | cluster_name, group, topic, partition, member_host, consumer_id, client_id | Percentage of retention window occupied by lag (>100 = data loss) |
 
 ### Consumer Group Aggregate Metrics
 
-| Metric | Labels | Description |
-|--------|--------|-------------|
-| `kafka_consumergroup_group_max_lag` | cluster_name, group | Max offset lag across partitions |
-| `kafka_consumergroup_group_max_lag_seconds` | cluster_name, group | Max time lag across partitions |
-| `kafka_consumergroup_group_sum_lag` | cluster_name, group | Sum of offset lag |
-| `kafka_consumergroup_group_topic_sum_lag` | cluster_name, group, topic | Sum of offset lag per topic |
+| Metric                                      | Labels                     | Description                      |
+| ------------------------------------------- | -------------------------- | -------------------------------- |
+| `kafka_consumergroup_group_max_lag`         | cluster_name, group        | Max offset lag across partitions |
+| `kafka_consumergroup_group_max_lag_seconds` | cluster_name, group        | Max time lag across partitions   |
+| `kafka_consumergroup_group_sum_lag`         | cluster_name, group        | Sum of offset lag                |
+| `kafka_consumergroup_group_topic_sum_lag`   | cluster_name, group, topic | Sum of offset lag per topic      |
 
 ### Operational Metrics
 
-| Metric | Labels | Description |
-|--------|--------|-------------|
-| `kafka_consumergroup_poll_time_ms` | cluster_name | Time to poll all offsets |
-| `kafka_lag_exporter_scrape_duration_seconds` | cluster_name | Collection cycle duration |
-| `kafka_lag_exporter_up` | — | 1 if healthy, 0 otherwise |
-| `kafka_lag_exporter_compaction_detected_total` | cluster_name | Partitions where log compaction was detected |
+| Metric                                          | Labels       | Description                                                            |
+| ----------------------------------------------- | ------------ | ---------------------------------------------------------------------- |
+| `kafka_consumergroup_poll_time_ms`              | cluster_name | Time to poll all offsets                                               |
+| `kafka_lag_exporter_scrape_duration_seconds`    | cluster_name | Collection cycle duration                                              |
+| `kafka_lag_exporter_up`                         | —            | 1 if healthy, 0 otherwise                                              |
+| `kafka_lag_exporter_compaction_detected_total`  | cluster_name | Partitions where log compaction was detected                           |
 | `kafka_lag_exporter_data_loss_partitions_total` | cluster_name | Partitions where data loss occurred (committed offset < low watermark) |
 
 ## HTTP Endpoints
 
-| Endpoint | Description |
-|----------|-------------|
-| `GET /metrics` | Prometheus metrics |
-| `GET /health` | Liveness probe (always 200 if running) |
-| `GET /ready` | Readiness probe (200 when metrics available, 503 if standby in HA mode) |
-| `GET /leader` | Leadership status JSON (`{"is_leader": true/false}`) |
-| `GET /` | Basic info page |
+| Endpoint       | Description                                                             |
+| -------------- | ----------------------------------------------------------------------- |
+| `GET /metrics` | Prometheus metrics                                                      |
+| `GET /health`  | Liveness probe (always 200 if running)                                  |
+| `GET /ready`   | Readiness probe (200 when metrics available, 503 if standby in HA mode) |
+| `GET /leader`  | Leadership status JSON (`{"is_leader": true/false}`)                    |
+| `GET /`        | Basic info page                                                         |
 
 ## Architecture
 
@@ -389,40 +395,40 @@ spec:
         prometheus.io/path: "/metrics"
     spec:
       containers:
-      - name: klag-exporter
-        image: klag-exporter:latest
-        ports:
-        - containerPort: 8000
-        livenessProbe:
-          httpGet:
-            path: /health
-            port: 8000
-          initialDelaySeconds: 5
-          periodSeconds: 10
-        readinessProbe:
-          httpGet:
-            path: /ready
-            port: 8000
-          initialDelaySeconds: 5
-          periodSeconds: 10
-        volumeMounts:
-        - name: config
-          mountPath: /etc/klag-exporter
-        env:
-        - name: KAFKA_USER
-          valueFrom:
-            secretKeyRef:
-              name: kafka-credentials
-              key: username
-        - name: KAFKA_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: kafka-credentials
-              key: password
+        - name: klag-exporter
+          image: klag-exporter:latest
+          ports:
+            - containerPort: 8000
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          volumeMounts:
+            - name: config
+              mountPath: /etc/klag-exporter
+          env:
+            - name: KAFKA_USER
+              valueFrom:
+                secretKeyRef:
+                  name: kafka-credentials
+                  key: username
+            - name: KAFKA_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: kafka-credentials
+                  key: password
       volumes:
-      - name: config
-        configMap:
-          name: klag-exporter-config
+        - name: config
+          configMap:
+            name: klag-exporter-config
 ---
 apiVersion: v1
 kind: Service
@@ -432,9 +438,9 @@ metadata:
     app: klag-exporter
 spec:
   ports:
-  - port: 8000
-    targetPort: 8000
-    name: metrics
+    - port: 8000
+      targetPort: 8000
+      name: metrics
   selector:
     app: klag-exporter
 ```
@@ -456,14 +462,15 @@ A pre-built Grafana dashboard is included in `test-stack/grafana/provisioning/da
 
 To calculate accurate time lag, klag-exporter fetches messages from Kafka® at the consumer group's committed offset to read the message timestamp. **Only the timestamp metadata is extracted** — the message payload (key and value) is never read, logged, or stored.
 
-| Risk | Level | Notes |
-|------|-------|-------|
-| Data exposure in logs | **None** | Only topic/partition/offset/timestamp logged, never payload |
-| Data in memory | **Low** | Payload briefly in process memory (~ms), then dropped |
-| Data exfiltration | **None** | Payload never sent, stored, or exposed via API |
-| Network exposure | **Same as any consumer** | Use TLS (`security.protocol=SSL`) for encryption |
+| Risk                  | Level                    | Notes                                                       |
+| --------------------- | ------------------------ | ----------------------------------------------------------- |
+| Data exposure in logs | **None**                 | Only topic/partition/offset/timestamp logged, never payload |
+| Data in memory        | **Low**                  | Payload briefly in process memory (~ms), then dropped       |
+| Data exfiltration     | **None**                 | Payload never sent, stored, or exposed via API              |
+| Network exposure      | **Same as any consumer** | Use TLS (`security.protocol=SSL`) for encryption            |
 
 **For sensitive environments:**
+
 - Disable timestamp sampling with `timestamp_sampling.enabled = false` — you'll still get offset lag metrics
 - Fetch size is limited to 256KB per partition to minimize data transfer
 - Run klag-exporter with minimal privileges and restricted network access
@@ -473,11 +480,13 @@ To calculate accurate time lag, klag-exporter fetches messages from Kafka® at t
 ### Time Lag Shows Gaps in Grafana
 
 This is expected when:
+
 - Consumer catches up completely (lag = 0)
 - Timestamp cache expires and refetch is in progress
 - Kafka® fetch times out
 
 **Solutions:**
+
 - Increase `cache_ttl` in config
 - Use Grafana's "Connect null values" option
 - For alerting, use `avg_over_time()` or `last_over_time()`
@@ -493,6 +502,51 @@ This is expected when:
 - Verify `bootstrap_servers` are reachable
 - Check authentication configuration in `consumer_properties`
 - Ensure network policies allow connections to Kafka® brokers
+
+## CI/CD Pipelines
+
+This repository uses GitHub Actions for continuous integration and delivery.
+
+- CI (ci.yml)
+  - Triggers: push and pull_request to main and master
+  - Jobs:
+    - Format: cargo fmt --all --check
+    - Clippy: cargo clippy --all-targets --all-features -- -D warnings
+    - Test: cargo test --all-features
+    - Build: cargo build --release
+    - Lint Helm Chart: helm lint ./helm/klag-exporter and a template render check
+  - Notes: Installs system packages (cmake, libssl-dev, libsasl2-dev, pkg-config), uses dtolnay/rust-toolchain and Swatinem/rust-cache.
+
+- Release preparation (release-plz-pr.yml)
+  - Triggers: push to main and manual dispatch; runs only for the softwaremill org and skips pushes where the head commit starts with "chore"
+  - Actions:
+    - Runs release-plz to open/update a “Release PR”
+    - Updates helm/klag-exporter/values.yaml image tag and helm/klag-exporter/Chart.yaml version/appVersion on the release branch derived from release-plz output
+  - Requires: RELEASE_PLZ_TOKEN with write permissions
+
+- Release (release.yml)
+  - Triggers: manual dispatch, or when a PR to main is closed and merged and has the label "release"
+  - Actions: Runs release-plz release to create tags and publish artifacts (e.g., crates.io)
+  - Requires: RELEASE_PLZ_TOKEN and CARGO_REGISTRY_TOKEN
+
+- Post Release (post-release.yml)
+  - Trigger: when a GitHub Release is created
+  - Jobs:
+    - Build binaries for linux x86_64 and aarch64 and upload them as artifacts
+    - Upload binaries to the GitHub Release
+    - Build and push multi-arch Docker images to ghcr.io using Dockerfile.release and the prebuilt binaries
+      - Tags: full semver, major.minor, major, and latest (on default branch)
+    - Package Helm chart and push to ghcr.io as an OCI artifact under OWNER/helm
+  - Requires:
+    - APP_ID and PRIVATE_KEY (GitHub App) for pushing with elevated permissions
+    - GITHUB_TOKEN (provided by GitHub) for publishing images, charts, and release assets
+
+Secrets and variables summary:
+
+- RELEASE_PLZ_TOKEN: GitHub token with repo write permissions for release-plz
+- CARGO_REGISTRY_TOKEN: crates.io publishing token
+- APP_ID and PRIVATE_KEY: GitHub App credentials used during post-release Docker publishing
+- GITHUB_TOKEN: auto-provided by GitHub Actions for the workflow run
 
 ## License
 

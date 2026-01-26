@@ -10,7 +10,7 @@ jobs:
   release-plz-pr:
     name: Release-plz PR
     runs-on: ubuntu-latest
-    if: ${{ github.repository_owner == 'softwaremill' }}
+    if: ${{ github.repository_owner == 'softwaremill' && (github.event_name != 'push' || !startsWith(github.event.head_commit.message, 'chore')) }}
     permissions:
       pull-requests: write
       contents: write
@@ -70,20 +70,21 @@ jobs:
           git fetch origin $RELEASE_BRANCH
           git checkout $RELEASE_BRANCH
 
-      - name: Update Helm chart values.yaml
+      - name: Update Helm chart values.yaml and Chart.yaml
         run: |
           sed -i 's/tag: ".*"/tag: "'$RELEASE_VERSION'"/' helm/klag-exporter/values.yaml
-          sed -i 's/tag: ".*"/tag: "'$RELEASE_VERSION'"/' helm/klag-exporter/Chart.yaml
+          sed -i 's/^appVersion: .*/appVersion: "'$RELEASE_VERSION'"/' helm/klag-exporter/Chart.yaml
+          sed -i 's/^version: .*/version: '$RELEASE_VERSION'/' helm/klag-exporter/Chart.yaml
           cat helm/klag-exporter/values.yaml | grep -A 3 "^image:"
 
-      - name: Commit and push updated values.yaml to release branch
+      - name: Commit and push updated Helm chart files to release branch
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add helm/klag-exporter/values.yaml
+          git add helm/klag-exporter/values.yaml helm/klag-exporter/Chart.yaml
           if git diff --staged --quiet; then
             echo "No changes to commit"
           else
-            git commit -m "chore(helm): update image tag to $RELEASE_VERSION"
+            git commit -m "chore(helm): update chart and image versions to $RELEASE_VERSION"
             git push origin HEAD:$RELEASE_BRANCH
           fi
