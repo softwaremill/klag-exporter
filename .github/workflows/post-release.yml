@@ -64,7 +64,7 @@ jobs:
   upload-binaries:
     name: Upload Binaries to Release
     needs: build-binaries
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     permissions:
       contents: write
     steps:
@@ -82,7 +82,7 @@ jobs:
   docker:
     name: Build and Push Docker Image
     needs: build-binaries
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     permissions:
       contents: write
       packages: write
@@ -148,7 +148,7 @@ jobs:
 
   helm-chart:
     name: Package and Push Helm Chart
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     permissions:
       contents: write
       packages: write

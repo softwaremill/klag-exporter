@@ -9,7 +9,7 @@ on:
 jobs:
   release-plz-pr:
     name: Release-plz PR
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     if: ${{ github.repository_owner == 'softwaremill' && (github.event_name != 'push' || !startsWith(github.event.head_commit.message, 'chore')) }}
     permissions:
       pull-requests: write
@@ -30,7 +30,7 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake build-essential libssl-dev libsasl2-dev zlib1g-dev libzstd-dev liblz4-dev pkg-config
+          sudo apt-get install -y cmake build-essential libssl-dev libsasl2-dev zlib1g-dev libzstd-dev liblz4-dev pkg-config jq
 
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
@@ -48,7 +48,7 @@ jobs:
 
   update-helm-release:
     name: Update Helm chart in release branch
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     needs: release-plz-pr
     if: ${{ needs.release-plz-pr.outputs.prs_created == 'true' }}
     permissions:
