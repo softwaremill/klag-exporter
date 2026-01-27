@@ -41,6 +41,7 @@ jobs:
         id: rust_version
         run: echo "version=$(rustc --version | awk '{print $2}')" >> $GITHUB_OUTPUT
       - uses: Swatinem/rust-cache@v2
+        if: ${{ !(github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'release')) }}
         with:
           key: ${{ runner.os }}-cargo-${{ steps.rust_version.outputs.version }}-${{ github.ref_name }}-${{ hashFiles('**/Cargo.lock') }}
           cache-targets: true
@@ -62,6 +63,7 @@ jobs:
         id: rust_version
         run: echo "version=$(rustc --version | awk '{print $2}')" >> $GITHUB_OUTPUT
       - uses: Swatinem/rust-cache@v2
+        if: ${{ !(github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'release')) }}
         with:
           key: ${{ runner.os }}-cargo-${{ steps.rust_version.outputs.version }}-${{ github.ref_name }}-${{ hashFiles('**/Cargo.lock') }}
           cache-targets: true
@@ -83,6 +85,7 @@ jobs:
         id: rust_version
         run: echo "version=$(rustc --version | awk '{print $2}')" >> $GITHUB_OUTPUT
       - uses: Swatinem/rust-cache@v2
+        if: ${{ !(github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'release')) }}
         with:
           key: ${{ runner.os }}-cargo-${{ steps.rust_version.outputs.version }}-${{ github.ref_name }}-${{ hashFiles('**/Cargo.lock') }}
           cache-targets: true
