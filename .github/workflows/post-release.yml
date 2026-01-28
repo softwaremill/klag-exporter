@@ -2,7 +2,8 @@ name: Post Release
 
 on:
   release:
-    types: [created]
+    types: [published]
+  workflow_dispatch: # Allow manual trigger
 
 env:
   CARGO_TERM_COLOR: always
@@ -87,6 +88,8 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: artifacts/**/*.tar.gz
+          tag_name: ${{ github.event.release.tag_name }}
+          make_latest: true
 
   # Build and push Docker image
   docker:
