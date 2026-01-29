@@ -40,7 +40,7 @@ data:
 
     [clusters.consumer_properties]
     {{- range $key, $value := index . "clusters.consumer_properties" }}
-    {{ $key }} = {{ $value | quote }}
+    {{ $key | quote }} = {{ $value | quote }}
     {{- end }}
     {{- end }}
     {{- end }}
