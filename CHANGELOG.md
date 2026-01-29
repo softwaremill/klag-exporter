@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.13](https://github.com/softwaremill/klag-exporter/compare/v0.1.12...v0.1.13) - 2026-01-29
+
+### Fixed
+
+- cluster consumer_properties isn't inherit by group client ([#29](https://github.com/softwaremill/klag-exporter/pull/29))
+
 ## [0.1.12](https://github.com/softwaremill/klag-exporter/compare/v0.1.11...v0.1.12) - 2026-01-29
 
 ### Other
