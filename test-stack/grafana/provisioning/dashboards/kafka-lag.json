@@ -1337,8 +1337,8 @@
   },
   "timepicker": {},
   "timezone": "",
-  "title": "Kafka Consumer Lag",
-  "uid": "kafka-lag-dashboard",
+  "title": "Kafka Consumer Lag (with Phase Annotations)",
+  "uid": "kafka-lag-dashboard-test",
   "version": 1,
   "weekStart": ""
 }
