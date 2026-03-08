@@ -505,8 +505,7 @@ mod tests {
     #[test]
     fn test_lag_calculator_group_state() {
         let snapshot = make_snapshot();
-        let metrics =
-            LagCalculator::calculate(&snapshot, &HashMap::new(), 0, 100, &HashSet::new());
+        let metrics = LagCalculator::calculate(&snapshot, &HashMap::new(), 0, 100, &HashSet::new());
 
         let group_metric = metrics
             .group_metrics
