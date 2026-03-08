@@ -48,6 +48,7 @@ pub struct GroupLagMetric {
     pub max_lag: i64,
     pub max_lag_seconds: Option<f64>,
     pub sum_lag: i64,
+    pub state: i32,
 }
 
 #[derive(Debug, Clone)]
@@ -68,6 +69,30 @@ pub struct PartitionOffsetMetric {
 }
 
 pub struct LagCalculator;
+
+/// Encode consumer group state as an integer.
+///
+/// The string values come from Kafka's DescribeGroups response and match
+/// `org.apache.kafka.common.ConsumerGroupState` exactly.
+///
+/// Classic protocol states: PreparingRebalance, CompletingRebalance, Stable, Dead, Empty
+/// KIP-848 protocol states: Assigning, Reconciling, Stable, Dead, Empty
+///
+/// Mapping:
+///   Unknown=0, PreparingRebalance=1, CompletingRebalance=2, Stable=3,
+///   Dead=4, Empty=5, Assigning=6, Reconciling=7
+pub fn encode_group_state(state: &str) -> i32 {
+    match state {
+        "PreparingRebalance" => 1,
+        "CompletingRebalance" => 2,
+        "Stable" => 3,
+        "Dead" => 4,
+        "Empty" => 5,
+        "Assigning" => 6,
+        "Reconciling" => 7,
+        _ => 0,
+    }
+}
 
 /// Timestamp data for a partition
 #[derive(Debug, Clone)]
@@ -200,6 +225,7 @@ impl LagCalculator {
                 max_lag: group_max_lag,
                 max_lag_seconds: group_max_lag_seconds,
                 sum_lag: group_sum_lag,
+                state: encode_group_state(&group.state),
             });
 
             // Add topic-level metrics
@@ -452,6 +478,43 @@ mod tests {
 
         // topic1 sum lag: 10 + 50 = 60
         assert_eq!(topic1_metric.sum_lag, 60);
+    }
+
+    #[test]
+    fn test_encode_group_state_classic_protocol() {
+        assert_eq!(encode_group_state("PreparingRebalance"), 1);
+        assert_eq!(encode_group_state("CompletingRebalance"), 2);
+        assert_eq!(encode_group_state("Stable"), 3);
+        assert_eq!(encode_group_state("Dead"), 4);
+        assert_eq!(encode_group_state("Empty"), 5);
+    }
+
+    #[test]
+    fn test_encode_group_state_kip848_protocol() {
+        assert_eq!(encode_group_state("Assigning"), 6);
+        assert_eq!(encode_group_state("Reconciling"), 7);
+    }
+
+    #[test]
+    fn test_encode_group_state_unknown_fallback() {
+        assert_eq!(encode_group_state("Unknown"), 0);
+        assert_eq!(encode_group_state("SomeFutureState"), 0);
+        assert_eq!(encode_group_state(""), 0);
+    }
+
+    #[test]
+    fn test_lag_calculator_group_state() {
+        let snapshot = make_snapshot();
+        let metrics =
+            LagCalculator::calculate(&snapshot, &HashMap::new(), 0, 100, &HashSet::new());
+
+        let group_metric = metrics
+            .group_metrics
+            .iter()
+            .find(|m| m.group_id == "test-group")
+            .unwrap();
+
+        assert_eq!(group_metric.state, 3); // "Stable" -> 3
     }
 
     #[test]

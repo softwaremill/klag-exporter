@@ -3,14 +3,15 @@ use crate::config::Granularity;
 use crate::metrics::definitions::{
     HELP_COMPACTION_DETECTED, HELP_DATA_LOSS_PARTITIONS, HELP_GROUP_LAG, HELP_GROUP_LAG_SECONDS,
     HELP_GROUP_MAX_LAG, HELP_GROUP_MAX_LAG_SECONDS, HELP_GROUP_OFFSET, HELP_GROUP_SUM_LAG,
-    HELP_GROUP_TOPIC_SUM_LAG, HELP_LAG_RETENTION_RATIO, HELP_LAST_UPDATE_TIMESTAMP,
+    HELP_GROUP_STATE, HELP_GROUP_TOPIC_SUM_LAG, HELP_LAG_RETENTION_RATIO,
+    HELP_LAST_UPDATE_TIMESTAMP,
     HELP_MESSAGES_LOST, HELP_PARTITION_EARLIEST_OFFSET, HELP_PARTITION_LATEST_OFFSET,
     HELP_POLL_TIME_MS, HELP_RETENTION_MARGIN, HELP_SCRAPE_DURATION_SECONDS, HELP_UP,
     LABEL_CLIENT_ID, LABEL_CLUSTER_NAME, LABEL_COMPACTION_DETECTED, LABEL_CONSUMER_ID,
     LABEL_DATA_LOSS_DETECTED, LABEL_GROUP, LABEL_MEMBER_HOST, LABEL_PARTITION, LABEL_TOPIC,
     METRIC_COMPACTION_DETECTED, METRIC_DATA_LOSS_PARTITIONS, METRIC_GROUP_LAG,
     METRIC_GROUP_LAG_SECONDS, METRIC_GROUP_MAX_LAG, METRIC_GROUP_MAX_LAG_SECONDS,
-    METRIC_GROUP_OFFSET, METRIC_GROUP_SUM_LAG, METRIC_GROUP_TOPIC_SUM_LAG,
+    METRIC_GROUP_OFFSET, METRIC_GROUP_STATE, METRIC_GROUP_SUM_LAG, METRIC_GROUP_TOPIC_SUM_LAG,
     METRIC_LAG_RETENTION_RATIO, METRIC_LAST_UPDATE_TIMESTAMP, METRIC_MESSAGES_LOST,
     METRIC_PARTITION_EARLIEST_OFFSET, METRIC_PARTITION_LATEST_OFFSET, METRIC_POLL_TIME_MS,
     METRIC_RETENTION_MARGIN, METRIC_SCRAPE_DURATION_SECONDS, METRIC_UP,
@@ -206,11 +207,18 @@ impl MetricsRegistry {
             if let Some(max_lag_seconds) = m.max_lag_seconds {
                 points.push(MetricPoint::gauge(
                     METRIC_GROUP_MAX_LAG_SECONDS,
-                    labels,
+                    labels.clone(),
                     max_lag_seconds,
                     HELP_GROUP_MAX_LAG_SECONDS,
                 ));
             }
+
+            points.push(MetricPoint::gauge(
+                METRIC_GROUP_STATE,
+                labels,
+                m.state as f64,
+                HELP_GROUP_STATE,
+            ));
         }
 
         // Topic-level metrics (always output)
@@ -558,6 +566,7 @@ mod tests {
                 max_lag: 10,
                 max_lag_seconds: Some(5.5),
                 sum_lag: 10,
+                state: 3,
             }],
             topic_metrics: vec![TopicLagMetric {
                 cluster_name: "test-cluster".to_string(),
@@ -607,6 +616,8 @@ mod tests {
 
         assert!(output.contains("# TYPE kafka_consumergroup_group_lag gauge"));
         assert!(output.contains("kafka_consumergroup_group_lag{"));
+        assert!(output.contains("# TYPE kafka_consumergroup_group_state gauge"));
+        assert!(output.contains("kafka_consumergroup_group_state{"));
     }
 
     #[test]
