@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Other
 
+- updated the docs with new metric info
 - fix cargo fmt formatting
 
 ## [0.1.16](https://github.com/softwaremill/klag-exporter/compare/v0.1.15...v0.1.16) - 2026-02-24
