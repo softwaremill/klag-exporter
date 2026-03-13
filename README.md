@@ -293,6 +293,7 @@ Use `${VAR_NAME}` syntax in config values. The exporter will substitute with env
 | `kafka_consumergroup_group_max_lag_seconds` | cluster_name, group        | Max time lag across partitions   |
 | `kafka_consumergroup_group_sum_lag`         | cluster_name, group        | Sum of offset lag                |
 | `kafka_consumergroup_group_topic_sum_lag`   | cluster_name, group, topic | Sum of offset lag per topic      |
+| `kafka_consumergroup_group_state`          | cluster_name, group        | Consumer group state as integer (0=Unknown, 1=PreparingRebalance, 2=CompletingRebalance, 3=Stable, 4=Dead, 5=Empty, 6=Assigning, 7=Reconciling) |
 
 ### Operational Metrics
 

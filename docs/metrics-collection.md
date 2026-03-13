@@ -201,6 +201,7 @@ datacenter = "us-east-1"
 | `kafka_consumergroup_group_sum_lag` | Sum of lag across all partitions | cluster_name, group |
 | `kafka_consumergroup_group_max_lag` | Max offset lag across partitions | cluster_name, group |
 | `kafka_consumergroup_group_max_lag_seconds` | Max time lag across partitions | cluster_name, group |
+| `kafka_consumergroup_group_state` | Consumer group state as integer (0=Unknown, 1=PreparingRebalance, 2=CompletingRebalance, 3=Stable, 4=Dead, 5=Empty, 6=Assigning, 7=Reconciling) | cluster_name, group |
 
 ### Topic-Level Metrics
 
