@@ -1,0 +1,25 @@
+docs/metrics-collection.md
+  42fbc1b66ce730ef 204
+README.md
+  42fbc1b66ce730ef 296
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.10",
+  "base_commit_sha": "59a839036130b497e8d8072d8a966ad2e11ec849",
+  "prompts": {
+    "42fbc1b66ce730ef": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "10fa6320-39df-4582-ae42-c0fd43d3dcd8",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Kris <krzysztof.grajek@googlemail.com>",
+      "messages": [],
+      "total_additions": 2,
+      "total_deletions": 0,
+      "accepted_lines": 2,
+      "overriden_lines": 0
+    }
+  }
+}
