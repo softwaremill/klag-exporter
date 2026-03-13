@@ -59,6 +59,7 @@ mod tests {
                 max_lag: 10,
                 max_lag_seconds: Some(5.0),
                 sum_lag: 10,
+                state: 3,
             }],
             topic_metrics: vec![TopicLagMetric {
                 cluster_name: "test".to_string(),

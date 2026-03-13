@@ -24,7 +24,6 @@ pub struct OffsetsSnapshot {
 #[derive(Debug, Clone)]
 pub struct GroupSnapshot {
     pub group_id: String,
-    #[allow(dead_code)]
     pub state: String,
     pub members: Vec<MemberSnapshot>,
     pub offsets: HashMap<TopicPartition, i64>,

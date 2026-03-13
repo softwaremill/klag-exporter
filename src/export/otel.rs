@@ -193,6 +193,29 @@ pub async fn run_otel_exporter(
         .build();
 
     let registry_clone = Arc::clone(&registry);
+    let _group_state = meter
+        .f64_observable_gauge("kafka_consumergroup_group_state")
+        .with_description("State of the consumer group as an integer")
+        .with_callback({
+            let reg = Arc::clone(&registry_clone);
+            move |observer| {
+                for metric in reg.get_otel_metrics() {
+                    if metric.name == "kafka_consumergroup_group_state" {
+                        for dp in &metric.data_points {
+                            let attrs: Vec<KeyValue> = dp
+                                .attributes
+                                .iter()
+                                .map(|(k, v)| KeyValue::new(k.clone(), v.clone()))
+                                .collect();
+                            observer.observe(dp.value, &attrs);
+                        }
+                    }
+                }
+            }
+        })
+        .build();
+
+    let registry_clone = Arc::clone(&registry);
     let _group_max_lag_seconds = meter
         .f64_observable_gauge("kafka_consumergroup_group_max_lag_seconds")
         .with_description("Maximum time lag in seconds across all partitions")
