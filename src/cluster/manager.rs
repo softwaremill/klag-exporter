@@ -30,6 +30,7 @@ pub struct ClusterManager {
     max_concurrent_fetches: usize,
     cache_cleanup_interval: Duration,
     collection_timeout: Duration,
+    client_recycle_interval: u64,
 }
 
 impl ClusterManager {
@@ -90,6 +91,7 @@ impl ClusterManager {
             max_concurrent_fetches: exporter_config.timestamp_sampling.max_concurrent_fetches,
             cache_cleanup_interval: exporter_config.timestamp_sampling.cache_ttl * 2,
             collection_timeout,
+            client_recycle_interval: exporter_config.performance.client_recycle_interval,
         })
     }
 
@@ -102,6 +104,7 @@ impl ClusterManager {
         let mut consecutive_errors = 0u32;
         let mut current_backoff = Duration::from_secs(1);
         let mut was_leader = leadership.is_leader();
+        let mut cycle_count: u64 = 0;
 
         if !was_leader {
             info!(
@@ -145,6 +148,38 @@ impl ClusterManager {
                             consecutive_errors = 0;
                             current_backoff = Duration::from_secs(1);
                             self.registry.set_healthy(true);
+
+                            // Periodically recycle Kafka clients to release
+                            // accumulated librdkafka internal metadata.
+                            // Run in spawn_blocking since client creation/teardown
+                            // involves thread startup and rd_kafka_destroy().
+                            if self.client_recycle_interval > 0 {
+                                cycle_count += 1;
+                                if cycle_count >= self.client_recycle_interval {
+                                    cycle_count = 0;
+                                    let client = Arc::clone(&self.client);
+                                    let sampler = self.timestamp_sampler.clone();
+                                    let cluster = self.cluster_name.clone();
+                                    let _ = tokio::task::spawn_blocking(move || {
+                                        if let Err(e) = client.recycle() {
+                                            warn!(
+                                                cluster = %cluster,
+                                                error = %e,
+                                                "Failed to recycle Kafka clients"
+                                            );
+                                        }
+                                        if let Some(ref sampler) = sampler {
+                                            if let Err(e) = sampler.recycle_pool() {
+                                                warn!(
+                                                    cluster = %cluster,
+                                                    error = %e,
+                                                    "Failed to recycle timestamp consumer pool"
+                                                );
+                                            }
+                                        }
+                                    }).await;
+                                }
+                            }
                         }
                         Ok(Err(e)) => {
                             consecutive_errors += 1;

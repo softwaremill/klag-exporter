@@ -9,10 +9,13 @@ granularity = "partition"
 [exporter.timestamp_sampling]
 enabled = true
 cache_ttl = "30s"
-max_concurrent_fetches = 20
+max_concurrent_fetches = 5
+
+[exporter.performance]
+client_recycle_interval = 0  # disabled for small test cluster
 
 [exporter.otel]
-enabled = true
+enabled = false
 endpoint = "http://otel-collector:4317"
 export_interval = "15s"
 

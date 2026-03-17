@@ -64,6 +64,12 @@ pub struct PerformanceConfig {
     /// Maximum number of partitions to fetch watermarks for in parallel
     #[serde(default = "default_max_concurrent_watermarks")]
     pub max_concurrent_watermarks: usize,
+    /// Number of collection cycles between Kafka client recycling.
+    /// Recycling destroys and recreates internal librdkafka clients to release
+    /// accumulated metadata that librdkafka never frees on its own.
+    /// Set to 0 to disable. Default: 50 (~25 min at 30s poll interval).
+    #[serde(default = "default_client_recycle_interval")]
+    pub client_recycle_interval: u64,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -154,7 +160,7 @@ fn default_cache_ttl() -> Duration {
 }
 
 fn default_max_concurrent_fetches() -> usize {
-    10
+    5
 }
 
 fn default_kafka_timeout() -> Duration {
@@ -170,6 +176,10 @@ fn default_max_concurrent_groups() -> usize {
 }
 
 fn default_max_concurrent_watermarks() -> usize {
+    50
+}
+
+fn default_client_recycle_interval() -> u64 {
     50
 }
 
@@ -250,6 +260,7 @@ impl Default for PerformanceConfig {
             offset_fetch_timeout: default_offset_fetch_timeout(),
             max_concurrent_groups: default_max_concurrent_groups(),
             max_concurrent_watermarks: default_max_concurrent_watermarks(),
+            client_recycle_interval: default_client_recycle_interval(),
         }
     }
 }
@@ -572,6 +583,7 @@ bootstrap_servers = "localhost:9092"
         );
         assert_eq!(config.exporter.performance.max_concurrent_groups, 10);
         assert_eq!(config.exporter.performance.max_concurrent_watermarks, 50);
+        assert_eq!(config.exporter.performance.client_recycle_interval, 50);
     }
 
     #[test]
@@ -585,6 +597,7 @@ kafka_timeout = "15s"
 offset_fetch_timeout = "5s"
 max_concurrent_groups = 20
 max_concurrent_watermarks = 100
+client_recycle_interval = 0
 
 [[clusters]]
 name = "test"
@@ -605,6 +618,7 @@ bootstrap_servers = "localhost:9092"
         );
         assert_eq!(config.exporter.performance.max_concurrent_groups, 20);
         assert_eq!(config.exporter.performance.max_concurrent_watermarks, 100);
+        assert_eq!(config.exporter.performance.client_recycle_interval, 0);
     }
 
     #[test]

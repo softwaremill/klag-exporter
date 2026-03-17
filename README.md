@@ -513,6 +513,9 @@ max_concurrent_groups = 20      # Default: 10
 
 # Maximum partitions to fetch watermarks for in parallel
 max_concurrent_watermarks = 100 # Default: 50
+
+# Client recycling interval — see Memory Management section below
+client_recycle_interval = 50    # Default: 50 (set 0 to disable)
 ```
 
 ### Recommended Settings by Cluster Size
@@ -546,6 +549,52 @@ max_concurrent_watermarks = 100 # Default: 50
 
 4. **Consider running multiple instances** — Split monitoring across clusters or consumer group subsets using different whitelist patterns.
 
+### Memory Management
+
+#### The librdkafka metadata cache problem
+
+librdkafka (the C library underlying the Rust Kafka client) maintains an internal hash table of topic handles. Every time the exporter touches a topic — via watermark fetches, offset lookups, or config queries — librdkafka creates or reuses a handle for that topic. These handles are **never freed** until the client is destroyed. There is no API to evict individual entries.
+
+On large clusters with thousands of topics, the internal cache grows with every collection cycle. If topics are created and deleted over time (topic churn), the handle count only increases — deleted topics remain as stale entries.
+
+#### Client recycling
+
+To prevent unbounded memory growth, klag-exporter periodically destroys and recreates its internal Kafka clients, releasing all accumulated metadata. This is controlled by the `client_recycle_interval` setting:
+
+```toml
+[exporter.performance]
+# Number of collection cycles between client recycling.
+# Set to 0 to disable (recommended for small/stable clusters).
+client_recycle_interval = 50   # Default: every 50 cycles (~25 min at 30s poll)
+```
+
+| Setting | When to use |
+|---------|-------------|
+| `0` (disabled) | Small clusters with few topics, or stable clusters with no topic churn |
+| `50` (default) | Large clusters with many topics or moderate topic churn |
+| `100+` | Large clusters where you want less frequent recycling overhead |
+
+Recycling is safe — it only runs between collection cycles after all in-flight operations have completed. The trade-off is a brief memory spike (~2-10 MB) while new clients are created before old ones are fully torn down.
+
+#### jemalloc
+
+klag-exporter uses [jemalloc](https://jemalloc.net/) as the default memory allocator (enabled via the `jemalloc` feature flag). jemalloc provides significantly better memory return behavior than glibc malloc, which tends to hold onto freed pages indefinitely in long-running processes.
+
+To disable jemalloc:
+
+```bash
+cargo build --release --no-default-features
+```
+
+#### Timestamp consumer pool sizing
+
+Each entry in the timestamp consumer pool (`max_concurrent_fetches`) is a full librdkafka client with its own background threads and connection state, consuming ~5-15 MB of memory. Size the pool to match your actual concurrency needs, not your topic or partition count:
+
+```toml
+[exporter.timestamp_sampling]
+max_concurrent_fetches = 5   # Default: 5. Each is a full Kafka client.
+```
+
 ## Troubleshooting
 
 ### Time Lag Shows Gaps in Grafana
@@ -564,9 +613,11 @@ This is expected when:
 
 ### High Memory Usage
 
-- Reduce `max_concurrent_fetches`
+- Reduce `max_concurrent_fetches` — each concurrent fetch is a full librdkafka client (~5-15 MB)
 - Use `granularity = "topic"` instead of `"partition"`
 - Add more restrictive `group_blacklist` / `topic_blacklist` patterns
+- On large clusters with topic churn, ensure `client_recycle_interval` is enabled (see below)
+- jemalloc is the default allocator and provides much better memory behavior than glibc malloc; disable with `--no-default-features` only if needed
 
 ### Connection Errors
 

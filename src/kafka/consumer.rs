@@ -73,7 +73,11 @@ impl TimestampConsumer {
             .set("auto.offset.reset", "earliest")
             // Small fetch size for timestamp sampling
             .set("fetch.max.bytes", "1048576")
-            .set("max.partition.fetch.bytes", "262144");
+            .set("max.partition.fetch.bytes", "262144")
+            // Memory tuning: minimize internal buffers and background metadata refresh
+            .set("queued.min.messages", "100")
+            .set("queued.max.messages.kbytes", "1024")
+            .set("topic.metadata.refresh.interval.ms", "-1");
 
         for (key, value) in &self.config.consumer_properties {
             client_config.set(key, value);
@@ -191,6 +195,28 @@ impl TimestampConsumer {
         // Take consumer out of guard so drop still returns it to pool
         // (guard.drop() handles the release)
         result
+    }
+
+    /// Recycle all pooled consumers to release accumulated librdkafka metadata.
+    /// Builds the new pool first — if any consumer creation fails, the old pool is kept.
+    pub fn recycle_pool(&self) -> Result<()> {
+        let mut new_consumers = Vec::with_capacity(self.pool_size);
+        for _ in 0..self.pool_size {
+            new_consumers.push(self.create_consumer()?);
+        }
+
+        let mut pool = self
+            .pool
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *pool = new_consumers;
+
+        debug!(
+            cluster = %self.cluster_name,
+            pool_size = self.pool_size,
+            "Recycled timestamp consumer pool"
+        );
+        Ok(())
     }
 
     #[allow(dead_code)]

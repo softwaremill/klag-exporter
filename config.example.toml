@@ -20,8 +20,39 @@ enabled = true
 # Cache timestamp for this duration to avoid excessive Kafka reads
 cache_ttl = "60s"
 
-# Maximum concurrent timestamp fetch operations
-max_concurrent_fetches = 10
+# Maximum concurrent timestamp fetch operations (each is a full librdkafka client)
+max_concurrent_fetches = 5
+
+[exporter.performance]
+# Timeout for Kafka API operations (metadata, watermarks, etc.)
+# kafka_timeout = "30s"
+
+# Timeout for fetching committed offsets per consumer group
+# offset_fetch_timeout = "10s"
+
+# Maximum consumer groups to fetch offsets for in parallel
+# max_concurrent_groups = 10
+
+# Maximum partitions to fetch watermarks for in parallel
+# max_concurrent_watermarks = 50
+
+# Client recycling interval (number of collection cycles).
+#
+# librdkafka caches internal topic handles that are never freed until the
+# client is destroyed. On large clusters with many topics (especially with
+# topic churn — topics being created and deleted), this cache grows
+# unboundedly and can consume gigabytes of memory.
+#
+# Recycling periodically destroys and recreates the internal Kafka clients,
+# releasing all accumulated metadata. The trade-off is a brief allocation
+# spike during the swap (~2-10 MB depending on cluster size).
+#
+# Guidelines:
+#   0   = disabled (recommended for small/stable clusters)
+#   50  = default (~25 min at 30s poll; good for large clusters)
+#   100 = less frequent (lower overhead, more metadata accumulation)
+#
+# client_recycle_interval = 50
 
 [exporter.otel]
 # Enable OpenTelemetry export (default: false)

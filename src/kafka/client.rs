@@ -10,10 +10,10 @@ use rdkafka::TopicPartitionList;
 use std::collections::{HashMap, HashSet};
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
-use tracing::{debug, instrument, warn};
+use tracing::{debug, info, instrument, warn};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct TopicPartition {
@@ -66,8 +66,8 @@ pub enum OffsetPosition {
 }
 
 pub struct KafkaClient {
-    admin: AdminClient<DefaultClientContext>,
-    consumer: Arc<BaseConsumer>,
+    admin: Mutex<Arc<AdminClient<DefaultClientContext>>>,
+    consumer: Mutex<Arc<BaseConsumer>>,
     config: ClusterConfig,
     timeout: Duration,
     performance: PerformanceConfig,
@@ -86,7 +86,21 @@ impl KafkaClient {
         performance: PerformanceConfig,
     ) -> Result<Self> {
         let timeout = performance.kafka_timeout;
+        let (admin, consumer) = Self::create_clients(config)?;
 
+        Ok(Self {
+            admin: Mutex::new(Arc::new(admin)),
+            consumer: Mutex::new(Arc::new(consumer)),
+            config: config.clone(),
+            timeout,
+            performance,
+        })
+    }
+
+    /// Create fresh AdminClient + BaseConsumer pair.
+    fn create_clients(
+        config: &ClusterConfig,
+    ) -> Result<(AdminClient<DefaultClientContext>, BaseConsumer)> {
         let mut client_config = ClientConfig::new();
         client_config.set("bootstrap.servers", &config.bootstrap_servers);
         client_config.set("client.id", format!("klag-exporter-{}", config.name));
@@ -105,16 +119,48 @@ impl KafkaClient {
                 format!("klag-exporter-internal-{}", config.name),
             )
             .set("enable.auto.commit", "false")
+            // Memory tuning: reduce internal buffer sizes (monitoring, not consuming)
+            .set("queued.min.messages", "100")
+            .set("queued.max.messages.kbytes", "1024")
+            // Reduce background metadata refresh — we call fetch_metadata() explicitly
+            .set("topic.metadata.refresh.interval.ms", "600000")
             .create()
             .map_err(KlagError::Kafka)?;
 
-        Ok(Self {
-            admin,
-            consumer: Arc::new(consumer),
-            config: config.clone(),
-            timeout,
-            performance,
-        })
+        Ok((admin, consumer))
+    }
+
+    /// Get a snapshot of the current admin client (cheap Arc clone).
+    fn admin(&self) -> Arc<AdminClient<DefaultClientContext>> {
+        Arc::clone(&self.admin.lock().unwrap_or_else(|p| p.into_inner()))
+    }
+
+    /// Get a snapshot of the current consumer (cheap Arc clone).
+    fn consumer(&self) -> Arc<BaseConsumer> {
+        Arc::clone(&self.consumer.lock().unwrap_or_else(|p| p.into_inner()))
+    }
+
+    /// Recycle internal Kafka clients to release accumulated librdkafka metadata.
+    ///
+    /// librdkafka caches `rd_kafka_topic_t` handles internally and never frees
+    /// them until the client is destroyed. Periodic recycling prevents unbounded
+    /// memory growth on clusters with many topics.
+    pub fn recycle(&self) -> Result<()> {
+        let rss_before = get_rss_kb();
+        let (new_admin, new_consumer) = Self::create_clients(&self.config)?;
+
+        *self.admin.lock().unwrap_or_else(|p| p.into_inner()) = Arc::new(new_admin);
+        *self.consumer.lock().unwrap_or_else(|p| p.into_inner()) = Arc::new(new_consumer);
+
+        let rss_after = get_rss_kb();
+        info!(
+            cluster = %self.config.name,
+            rss_before_kb = rss_before,
+            rss_after_kb = rss_after,
+            rss_reclaimed_kb = rss_before as i64 - rss_after as i64,
+            "Recycled Kafka clients"
+        );
+        Ok(())
     }
 
     #[allow(dead_code)]
@@ -128,8 +174,8 @@ impl KafkaClient {
 
     #[instrument(skip(self), fields(cluster = %self.config.name))]
     pub fn list_consumer_groups(&self) -> Result<Vec<ConsumerGroupInfo>> {
-        let group_list: GroupList = self
-            .consumer
+        let consumer = self.consumer();
+        let group_list: GroupList = consumer
             .fetch_group_list(None, self.timeout)
             .map_err(KlagError::Kafka)?;
 
@@ -149,11 +195,11 @@ impl KafkaClient {
 
     #[instrument(skip(self, group_ids), fields(cluster = %self.config.name, count = group_ids.len()))]
     pub fn describe_consumer_groups(&self, group_ids: &[&str]) -> Result<Vec<GroupDescription>> {
+        let consumer = self.consumer();
         let mut descriptions = Vec::with_capacity(group_ids.len());
 
         for group_id in group_ids {
-            let group_list = self
-                .consumer
+            let group_list = consumer
                 .fetch_group_list(Some(group_id), self.timeout)
                 .map_err(KlagError::Kafka)?;
 
@@ -202,9 +248,12 @@ impl KafkaClient {
             .map_err(|e| KlagError::Admin(format!("Invalid group_id contains null byte: {e}")))?;
         let timeout_ms = timeout.as_millis().min(i32::MAX as u128) as i32;
 
+        // Hold an Arc to the admin client for the duration of the FFI call
+        // to keep the native rd_kafka_t handle valid.
+        let admin = self.admin();
+
         unsafe {
-            // Get the native rd_kafka_t handle from the AdminClient
-            let rk = self.admin.inner().native_ptr();
+            let rk = admin.inner().native_ptr();
 
             // Build the C topic-partition list from our partitions
             let c_tpl = rd_kafka_topic_partition_list_new(partitions.len() as i32);
@@ -309,11 +358,9 @@ impl KafkaClient {
             }
             cleanup.queue = queue;
 
-            // Issue the async call
+            // Issue the async call — caller retains ownership of request
             let mut request_ptr = request;
             rd_kafka_ListConsumerGroupOffsets(rk, &mut request_ptr, 1, options, queue);
-            // After the call, the request is consumed; prevent double-free
-            cleanup.request = std::ptr::null_mut();
 
             // Poll for the result event (blocks up to timeout)
             let event = rd_kafka_queue_poll(queue, timeout_ms);
@@ -415,7 +462,7 @@ impl KafkaClient {
 
     #[instrument(skip(self), fields(cluster = %self.config.name))]
     pub fn fetch_metadata(&self) -> Result<Metadata> {
-        self.consumer
+        self.consumer()
             .fetch_metadata(None, self.timeout)
             .map_err(KlagError::Kafka)
     }
@@ -447,11 +494,11 @@ impl KafkaClient {
         tpl: &TopicPartitionList,
         position: OffsetPosition,
     ) -> Result<HashMap<TopicPartition, i64>> {
+        let consumer = self.consumer();
         let mut offsets = HashMap::new();
 
         for elem in tpl.elements() {
-            let (low, high) = self
-                .consumer
+            let (low, high) = consumer
                 .fetch_watermarks(elem.topic(), elem.partition(), self.timeout)
                 .map_err(KlagError::Kafka)?;
 
@@ -471,14 +518,12 @@ impl KafkaClient {
     #[allow(dead_code)]
     pub fn fetch_all_watermarks(&self) -> Result<HashMap<TopicPartition, (i64, i64)>> {
         let metadata = self.fetch_metadata()?;
+        let consumer = self.consumer();
         let mut watermarks = HashMap::new();
 
         for topic in metadata.topics() {
             for partition in topic.partitions() {
-                match self
-                    .consumer
-                    .fetch_watermarks(topic.name(), partition.id(), self.timeout)
-                {
+                match consumer.fetch_watermarks(topic.name(), partition.id(), self.timeout) {
                     Ok((low, high)) => {
                         watermarks.insert(
                             TopicPartition::new(topic.name(), partition.id()),
@@ -531,7 +576,7 @@ impl KafkaClient {
 
         // Use semaphore to limit concurrency
         let semaphore = Arc::new(Semaphore::new(max_concurrent));
-        let consumer = Arc::clone(&self.consumer);
+        let consumer = self.consumer();
         let timeout = self.timeout;
 
         let mut handles = Vec::with_capacity(partitions.len());
@@ -591,11 +636,6 @@ impl KafkaClient {
     }
 
     #[allow(dead_code)]
-    pub fn inner_admin(&self) -> &AdminClient<DefaultClientContext> {
-        &self.admin
-    }
-
-    #[allow(dead_code)]
     pub fn admin_options(&self) -> AdminOptions {
         AdminOptions::new().request_timeout(Some(self.timeout))
     }
@@ -619,9 +659,9 @@ impl KafkaClient {
             .map(|name| ResourceSpecifier::Topic(name.as_str()))
             .collect();
 
+        let admin = self.admin();
         let opts = self.admin_options();
-        let results = self
-            .admin
+        let results = admin
             .describe_configs(resources.iter(), &opts)
             .await
             .map_err(KlagError::Kafka)?;
@@ -725,6 +765,16 @@ fn parse_member_assignment(assignment: Option<&[u8]>) -> Option<Vec<TopicPartiti
     }
 
     Some(assignments)
+}
+
+/// Read current process RSS in kilobytes. Returns 0 on failure or non-Linux.
+/// Assumes 4 KB page size (standard for x86_64 Linux where /proc/self/statm exists).
+fn get_rss_kb() -> u64 {
+    std::fs::read_to_string("/proc/self/statm")
+        .ok()
+        .and_then(|s| s.split_whitespace().nth(1)?.parse::<u64>().ok())
+        .map(|pages| pages * 4)
+        .unwrap_or(0)
 }
 
 impl std::fmt::Debug for KafkaClient {

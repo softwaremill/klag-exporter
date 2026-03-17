@@ -1,3 +1,16 @@
+#[cfg(feature = "jemalloc")]
+#[global_allocator]
+static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
+// Tune jemalloc: fewer arenas, faster page release, background cleanup.
+// Can be overridden at runtime via MALLOC_CONF env var.
+#[cfg(feature = "jemalloc")]
+#[used]
+#[allow(non_upper_case_globals)]
+#[unsafe(export_name = "_rjem_malloc_conf")]
+pub static malloc_conf: &[u8] =
+    b"narenas:2,dirty_decay_ms:5000,muzzy_decay_ms:5000,background_thread:true\0";
+
 mod cluster;
 mod collector;
 mod config;
