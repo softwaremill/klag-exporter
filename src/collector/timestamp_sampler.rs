@@ -104,6 +104,11 @@ impl TimestampSampler {
             .collect()
     }
 
+    /// Recycle the underlying consumer pool to release accumulated metadata.
+    pub fn recycle_pool(&self) -> Result<()> {
+        self.inner.consumer.recycle_pool()
+    }
+
     pub fn clear_stale_entries(&self) {
         let now = Instant::now();
         self.inner
