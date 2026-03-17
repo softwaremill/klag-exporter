@@ -1,0 +1,69 @@
+config.example.toml
+  c5551472e7a6412c 23-24,26-55
+Cargo.toml
+  c5551472e7a6412c 33,50-51
+src/cluster/manager.rs
+  c5551472e7a6412c 33,94,107,151-182
+Dockerfile.dev
+  c5551472e7a6412c 2
+test-stack/klag-config.toml
+  c5551472e7a6412c 12,14-15,18
+src/collector/timestamp_sampler.rs
+  c5551472e7a6412c 107-111
+src/kafka/consumer.rs
+  c5551472e7a6412c 77-80,200-221
+src/kafka/client.rs
+  c5551472e7a6412c 13,16,69-70,89,91-103,122-126,130-150,152-158,160-163,177-178,198,251-254,361,465,497,521,579,662,770-779
+src/config.rs
+  c5551472e7a6412c 67-72,163,182-185,263,586,600,621
+src/main.rs
+  c5551472e7a6412c 1-12
+README.md
+  c5551472e7a6412c 516-518,552-597,616,619-620
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.12",
+  "base_commit_sha": "9e4682094d8edc97f7f138e3676ee67f605d11e4",
+  "prompts": {
+    "31441395cad67db1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "596cd0e4-143c-45e3-ab3d-7de6d6e7e2a1",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Kris <krzysztof.grajek@googlemail.com>",
+      "messages": [],
+      "total_additions": 2,
+      "total_deletions": 1,
+      "accepted_lines": 2,
+      "overriden_lines": 0
+    },
+    "42fbc1b66ce730ef": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "10fa6320-39df-4582-ae42-c0fd43d3dcd8",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Kris <krzysztof.grajek@googlemail.com>",
+      "messages": [],
+      "total_additions": 2,
+      "total_deletions": 0,
+      "accepted_lines": 1,
+      "overriden_lines": 0
+    },
+    "c5551472e7a6412c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5a4da6c0-8172-4b37-8516-4a8fd6a18f8b",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Kris <krzysztof.grajek@googlemail.com>",
+      "messages": [],
+      "total_additions": 354,
+      "total_deletions": 98,
+      "accepted_lines": 264,
+      "overriden_lines": 0
+    }
+  }
+}
