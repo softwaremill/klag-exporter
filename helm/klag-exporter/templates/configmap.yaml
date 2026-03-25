@@ -45,6 +45,9 @@ data:
     lease_namespace = {{ .lease_namespace | quote }}
     lease_duration_secs = {{ .lease_duration_secs }}
     grace_period_secs = {{ .grace_period_secs }}
+    {{- if .identity }}
+    identity = {{ .identity | quote }}
+    {{- end }}
     {{- end }}
 
     {{- range .Values.config.clusters }}
