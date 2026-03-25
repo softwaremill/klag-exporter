@@ -153,8 +153,8 @@ config:
     provider: "kubernetes"
     # Name of the Kubernetes Lease resource used for leader election.
     lease_name: "klag-exporter"
-    # Namespace where the Lease resource is created.
-    lease_namespace: "default"
+    # Namespace where the Lease resource is created. If empty, the application will use its own default.
+    lease_namespace: ""
     # Duration in seconds the lease is valid before it expires.
     lease_duration_secs: 15
     # Grace period in seconds for lease renewal. Must be less than lease_duration_secs.
