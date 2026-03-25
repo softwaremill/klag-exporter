@@ -39,6 +39,10 @@ data:
 
     [exporter.leadership]
     {{- with index .Values.config "exporter.leadership" }}
+    # NOTE: When leadership is enabled and provider is "kubernetes", the service account
+    # running this exporter must have RBAC permissions on leases.coordination.k8s.io:
+    # get, list, watch, create, update, and patch. This chart does not provision these
+    # Roles/RoleBindings; they must be created separately.
     enabled = {{ .enabled }}
     provider = {{ .provider | quote }}
     lease_name = {{ .lease_name | quote }}
