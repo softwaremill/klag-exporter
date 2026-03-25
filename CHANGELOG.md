@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.20](https://github.com/softwaremill/klag-exporter/compare/v0.1.19...v0.1.20) - 2026-03-25
+
+### Other
+
+- Update helm/klag-exporter/templates/configmap.yaml
+- Update helm/klag-exporter/values.yaml
+- Update helm/klag-exporter/templates/configmap.yaml
+- Support the new config option in helm chart
+
 ## [0.1.19](https://github.com/softwaremill/klag-exporter/compare/v0.1.18...v0.1.19) - 2026-03-17
 
 ### Other
