@@ -28,6 +28,32 @@ data:
     export_interval = {{ .export_interval | quote }}
     {{- end }}
 
+    [exporter.performance]
+    {{- with index .Values.config "exporter.performance" }}
+    kafka_timeout = {{ .kafka_timeout | quote }}
+    offset_fetch_timeout = {{ .offset_fetch_timeout | quote }}
+    max_concurrent_groups = {{ .max_concurrent_groups }}
+    max_concurrent_watermarks = {{ .max_concurrent_watermarks }}
+    client_recycle_interval = {{ .client_recycle_interval }}
+    {{- end }}
+
+    [exporter.leadership]
+    {{- with index .Values.config "exporter.leadership" }}
+    # NOTE: When leadership is enabled and provider is "kubernetes", the service account
+    # running this exporter must have RBAC permissions on leases.coordination.k8s.io:
+    # get, list, watch, create, update, and patch. This chart does not provision these
+    # Roles/RoleBindings; they must be created separately.
+    enabled = {{ .enabled }}
+    provider = {{ .provider | quote }}
+    lease_name = {{ .lease_name | quote }}
+    lease_namespace = {{ .lease_namespace | quote }}
+    lease_duration_secs = {{ .lease_duration_secs }}
+    grace_period_secs = {{ .grace_period_secs }}
+    {{- if .identity }}
+    identity = {{ .identity | quote }}
+    {{- end }}
+    {{- end }}
+
     {{- range .Values.config.clusters }}
     [[clusters]]
     name = {{ .name | quote }}
@@ -40,6 +66,13 @@ data:
 
     [clusters.consumer_properties]
     {{- range $key, $value := index . "clusters.consumer_properties" }}
+    {{ $key | quote }} = {{ $value | quote }}
+    {{- end }}
+    {{- end }}
+    {{- if .labels }}
+
+    [clusters.labels]
+    {{- range $key, $value := .labels }}
     {{ $key | quote }} = {{ $value | quote }}
     {{- end }}
     {{- end }}
