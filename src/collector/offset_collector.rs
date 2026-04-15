@@ -1,4 +1,4 @@
-use crate::config::{CompiledFilters, PerformanceConfig};
+use crate::config::{CompiledFilters, Granularity, PerformanceConfig};
 use crate::error::Result;
 use crate::kafka::client::{KafkaClient, TopicPartition};
 use std::collections::{HashMap, HashSet};
@@ -10,6 +10,7 @@ pub struct OffsetCollector {
     client: Arc<KafkaClient>,
     filters: CompiledFilters,
     performance: PerformanceConfig,
+    granularity: Granularity,
 }
 
 #[derive(Debug, Clone)]
@@ -47,11 +48,13 @@ impl OffsetCollector {
         client: Arc<KafkaClient>,
         filters: CompiledFilters,
         performance: PerformanceConfig,
+        granularity: Granularity,
     ) -> Self {
         Self {
             client,
             filters,
             performance,
+            granularity,
         }
     }
 
@@ -94,8 +97,13 @@ impl OffsetCollector {
             .map(|g| g.group_id.as_str())
             .collect();
 
-        // Describe filtered groups via batched FFI (one chunked call).
-        let descriptions = self.client.describe_consumer_groups(&group_ids)?;
+        // Describe filtered groups via batched FFI. Skip member-assignment
+        // parsing unless we actually emit per-partition member labels
+        // (granularity = partition).
+        let parse_assignments = matches!(self.granularity, Granularity::Partition);
+        let descriptions = self
+            .client
+            .describe_consumer_groups(&group_ids, parse_assignments)?;
 
         // Compute the monitored partition + topic set once from a single
         // metadata fetch. Topic filter is applied here, BEFORE any

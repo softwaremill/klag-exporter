@@ -195,12 +195,27 @@ impl KafkaClient {
     /// which dominated collection time on large clusters (O(groups) serial
     /// round trips). `protocol_type`/`protocol` fields are not populated — they
     /// are not consumed downstream (marked `#[allow(dead_code)]`).
+    /// Describe consumer groups via batched FFI. Pass `parse_assignments =
+    /// false` to skip the per-member assignment-parsing step (saves
+    /// O(groups × members × partitions-per-member) work per cycle). The
+    /// data is only consumed by per-partition metrics, so the default
+    /// topic-granularity mode should pass `false`.
     #[instrument(skip(self, group_ids), fields(cluster = %self.config.name, count = group_ids.len()))]
-    pub fn describe_consumer_groups(&self, group_ids: &[&str]) -> Result<Vec<GroupDescription>> {
+    pub fn describe_consumer_groups(
+        &self,
+        group_ids: &[&str],
+        parse_assignments: bool,
+    ) -> Result<Vec<GroupDescription>> {
         use crate::kafka::admin::describe_consumer_groups_batched;
 
         let admin = self.admin();
-        let batched = describe_consumer_groups_batched(&admin, group_ids, self.timeout, 100)?;
+        let batched = describe_consumer_groups_batched(
+            &admin,
+            group_ids,
+            self.timeout,
+            100,
+            parse_assignments,
+        )?;
 
         Ok(batched
             .into_iter()

@@ -45,8 +45,12 @@ impl ClusterManager {
         let performance = exporter_config.performance.clone();
 
         let client = Arc::new(KafkaClient::with_performance(&config, performance.clone())?);
-        let offset_collector =
-            OffsetCollector::with_performance(Arc::clone(&client), filters, performance.clone());
+        let offset_collector = OffsetCollector::with_performance(
+            Arc::clone(&client),
+            filters,
+            performance.clone(),
+            exporter_config.granularity,
+        );
 
         let timestamp_sampler = if exporter_config.timestamp_sampling.enabled {
             let ts_consumer = TimestampConsumer::with_pool_size(

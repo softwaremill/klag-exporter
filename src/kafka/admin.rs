@@ -274,11 +274,18 @@ pub struct BatchedMember {
 /// Chunks the input into sub-calls of at most `chunk_size` groups each and
 /// aggregates results. Per-group errors are logged at WARN and the group is
 /// omitted from the returned Vec.
+///
+/// When `parse_assignments = false`, each returned `BatchedMember` has an
+/// empty `assignments: Vec<TopicPartition>`. This skips a per-member
+/// iteration over the assignment's `rd_kafka_topic_partition_list_t` — the
+/// data is only consumed by per-partition metrics (granularity = "partition"),
+/// so it's pure wasted work at the default topic granularity.
 pub fn describe_consumer_groups_batched(
     admin: &AdminClient<DefaultClientContext>,
     group_ids: &[&str],
     timeout: Duration,
     chunk_size: usize,
+    parse_assignments: bool,
 ) -> Result<Vec<BatchedGroupDescription>> {
     if group_ids.is_empty() {
         return Ok(Vec::new());
@@ -286,7 +293,8 @@ pub fn describe_consumer_groups_batched(
     let chunk_size = chunk_size.max(1);
     let mut out = Vec::with_capacity(group_ids.len());
     for chunk in group_ids.chunks(chunk_size) {
-        let mut part = describe_consumer_groups_one_chunk(admin, chunk, timeout)?;
+        let mut part =
+            describe_consumer_groups_one_chunk(admin, chunk, timeout, parse_assignments)?;
         out.append(&mut part);
     }
     Ok(out)
@@ -296,6 +304,7 @@ fn describe_consumer_groups_one_chunk(
     admin: &AdminClient<DefaultClientContext>,
     group_ids: &[&str],
     timeout: Duration,
+    parse_assignments: bool,
 ) -> Result<Vec<BatchedGroupDescription>> {
     let timeout_ms = timeout.as_millis().min(i32::MAX as u128) as i32;
     let rk = admin_native_ptr(admin);
@@ -436,19 +445,21 @@ fn describe_consumer_groups_one_chunk(
                 let client_id = ptr_to_string(rd_kafka_MemberDescription_client_id(member));
                 let client_host = ptr_to_string(rd_kafka_MemberDescription_host(member));
 
-                let assignment = rd_kafka_MemberDescription_assignment(member);
                 let mut assignments = Vec::new();
-                if !assignment.is_null() {
-                    let tpl_ptr = rd_kafka_MemberAssignment_partitions(assignment);
-                    if !tpl_ptr.is_null() {
-                        let tpl = &*tpl_ptr;
-                        for j in 0..tpl.cnt {
-                            let el = &*tpl.elems.add(j as usize);
-                            if el.topic.is_null() {
-                                continue;
+                if parse_assignments {
+                    let assignment = rd_kafka_MemberDescription_assignment(member);
+                    if !assignment.is_null() {
+                        let tpl_ptr = rd_kafka_MemberAssignment_partitions(assignment);
+                        if !tpl_ptr.is_null() {
+                            let tpl = &*tpl_ptr;
+                            for j in 0..tpl.cnt {
+                                let el = &*tpl.elems.add(j as usize);
+                                if el.topic.is_null() {
+                                    continue;
+                                }
+                                let topic = CStr::from_ptr(el.topic).to_string_lossy().to_string();
+                                assignments.push(TopicPartition::new(topic, el.partition));
                             }
-                            let topic = CStr::from_ptr(el.topic).to_string_lossy().to_string();
-                            assignments.push(TopicPartition::new(topic, el.partition));
                         }
                     }
                 }
