@@ -80,6 +80,16 @@ pub struct PerformanceConfig {
     /// `max_concurrent_groups` above ~50.
     #[serde(default = "default_max_blocking_threads")]
     pub max_blocking_threads: usize,
+    /// How long to cache each topic's `cleanup.policy` in memory.
+    /// `cleanup.policy` rarely changes after topic creation, so caching it
+    /// for a long time saves a per-cycle `DescribeConfigs` RPC over the
+    /// monitored topic set. Only topics new to the cache (or whose entry
+    /// has expired) get queried on a given cycle.
+    #[serde(
+        with = "humantime_serde",
+        default = "default_compacted_topics_cache_ttl"
+    )]
+    pub compacted_topics_cache_ttl: Duration,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -197,6 +207,10 @@ fn default_max_blocking_threads() -> usize {
     64
 }
 
+fn default_compacted_topics_cache_ttl() -> Duration {
+    Duration::from_secs(3600)
+}
+
 fn default_otel_endpoint() -> String {
     "http://localhost:4317".to_string()
 }
@@ -276,6 +290,7 @@ impl Default for PerformanceConfig {
             max_concurrent_watermarks: default_max_concurrent_watermarks(),
             client_recycle_interval: default_client_recycle_interval(),
             max_blocking_threads: default_max_blocking_threads(),
+            compacted_topics_cache_ttl: default_compacted_topics_cache_ttl(),
         }
     }
 }
@@ -619,6 +634,10 @@ bootstrap_servers = "localhost:9092"
         assert_eq!(config.exporter.performance.max_concurrent_watermarks, 50);
         assert_eq!(config.exporter.performance.client_recycle_interval, 50);
         assert_eq!(config.exporter.performance.max_blocking_threads, 64);
+        assert_eq!(
+            config.exporter.performance.compacted_topics_cache_ttl,
+            Duration::from_secs(3600)
+        );
     }
 
     #[test]

@@ -2,15 +2,80 @@ use crate::config::{CompiledFilters, Granularity, PerformanceConfig};
 use crate::error::Result;
 use crate::kafka::client::{KafkaClient, TopicPartition};
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tracing::{debug, instrument, warn};
+
+/// Per-topic TTL cache for `cleanup.policy=compact` detection.
+///
+/// `cleanup.policy` is set at topic creation and almost never changes, so
+/// caching it with a long TTL saves a per-cycle `DescribeConfigs` over the
+/// monitored topic set. On each cycle the collector asks the cache which
+/// topics still need to be queried fresh, then merges the cached-true
+/// entries with whatever DescribeConfigs returns.
+struct CompactedTopicsCache {
+    ttl: Duration,
+    // (is_compacted, fetched_at). Mutex is fine — accessed only from
+    // `collect_parallel` on the cluster's single collection task.
+    entries: Mutex<HashMap<String, (bool, Instant)>>,
+}
+
+impl CompactedTopicsCache {
+    fn new(ttl: Duration) -> Self {
+        Self {
+            ttl,
+            entries: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Split `monitored_topics` into:
+    ///   - `cached_compacted` — topics the cache says are compacted (fresh)
+    ///   - `to_fetch` — topics with no fresh cache entry (need DescribeConfigs)
+    fn partition<'a>(&self, monitored_topics: &'a [String]) -> (HashSet<String>, Vec<&'a str>) {
+        let now = Instant::now();
+        let entries = self.entries.lock().unwrap_or_else(|p| p.into_inner());
+
+        let mut cached_compacted = HashSet::new();
+        let mut to_fetch: Vec<&str> = Vec::new();
+        for topic in monitored_topics {
+            match entries.get(topic) {
+                Some((is_compacted, fetched_at)) if now.duration_since(*fetched_at) < self.ttl => {
+                    if *is_compacted {
+                        cached_compacted.insert(topic.clone());
+                    }
+                }
+                _ => to_fetch.push(topic.as_str()),
+            }
+        }
+        (cached_compacted, to_fetch)
+    }
+
+    /// Update the cache with a fresh `DescribeConfigs` result. For each topic
+    /// in `fetched_topics`, record whether it appeared in `compacted_result`.
+    fn update(&self, fetched_topics: &[&str], compacted_result: &HashSet<String>) {
+        let now = Instant::now();
+        let mut entries = self.entries.lock().unwrap_or_else(|p| p.into_inner());
+        for topic in fetched_topics {
+            let is_compacted = compacted_result.contains(*topic);
+            entries.insert((*topic).to_string(), (is_compacted, now));
+        }
+    }
+
+    /// Drop cache entries for topics no longer being monitored.
+    fn prune_to(&self, monitored_topics: &[String]) {
+        let keep: HashSet<&str> = monitored_topics.iter().map(|s| s.as_str()).collect();
+        let mut entries = self.entries.lock().unwrap_or_else(|p| p.into_inner());
+        entries.retain(|k, _| keep.contains(k.as_str()));
+    }
+}
 
 pub struct OffsetCollector {
     client: Arc<KafkaClient>,
     filters: CompiledFilters,
     performance: PerformanceConfig,
     granularity: Granularity,
+    compacted_cache: CompactedTopicsCache,
 }
 
 #[derive(Debug, Clone)]
@@ -50,11 +115,13 @@ impl OffsetCollector {
         performance: PerformanceConfig,
         granularity: Granularity,
     ) -> Self {
+        let compacted_cache = CompactedTopicsCache::new(performance.compacted_topics_cache_ttl);
         Self {
             client,
             filters,
             performance,
             granularity,
+            compacted_cache,
         }
     }
 
@@ -141,16 +208,37 @@ impl OffsetCollector {
         // group; we then filter the (much smaller) response by topic.
         let group_offsets = self.fetch_all_group_offsets_batched(&group_ids).await;
 
-        // Compacted-topic lookup restricted to monitored topics (huge saving
-        // vs. the prior full-cluster DescribeConfigs).
-        let compacted_topics = self
-            .client
-            .fetch_compacted_topics_for(&monitored_topics)
-            .await
-            .unwrap_or_else(|e| {
-                warn!(error = %e, "Failed to fetch compacted topics");
-                HashSet::new()
-            });
+        // Compacted-topic lookup — TTL-cached per topic. `cleanup.policy`
+        // almost never changes after topic creation, so most cycles only
+        // refresh new topics (or nothing at all in steady state).
+        let (mut compacted_topics, to_fetch) = self.compacted_cache.partition(&monitored_topics);
+        if !to_fetch.is_empty() {
+            debug!(
+                to_fetch = to_fetch.len(),
+                cached = compacted_topics.len(),
+                "Compacted-topic cache partial miss — refreshing"
+            );
+            let to_fetch_owned: Vec<String> = to_fetch.iter().map(|s| s.to_string()).collect();
+            match self
+                .client
+                .fetch_compacted_topics_for(&to_fetch_owned)
+                .await
+            {
+                Ok(freshly_compacted) => {
+                    self.compacted_cache.update(&to_fetch, &freshly_compacted);
+                    compacted_topics.extend(freshly_compacted);
+                }
+                Err(e) => warn!(error = %e, "Failed to refresh compacted topics"),
+            }
+        } else {
+            debug!(
+                cached = compacted_topics.len(),
+                "Compacted-topic cache fully hit — no DescribeConfigs RPC"
+            );
+        }
+        // Drop cache entries for topics no longer monitored (filter change,
+        // topic deletion) so memory doesn't grow unboundedly.
+        self.compacted_cache.prune_to(&monitored_topics);
 
         // Build group snapshots
         let mut groups = Vec::with_capacity(descriptions.len());
@@ -361,5 +449,77 @@ mod tests {
         assert_eq!(groups.len(), 2);
         assert!(groups.contains(&"group1"));
         assert!(groups.contains(&"group2"));
+    }
+
+    #[test]
+    fn compacted_cache_empty_cache_requests_all() {
+        let cache = CompactedTopicsCache::new(Duration::from_secs(60));
+        let topics = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        let (cached, to_fetch) = cache.partition(&topics);
+        assert!(cached.is_empty());
+        assert_eq!(to_fetch, vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn compacted_cache_hit_skips_fetch() {
+        let cache = CompactedTopicsCache::new(Duration::from_secs(60));
+        let topics = vec!["a".to_string(), "b".to_string()];
+        let mut compacted = HashSet::new();
+        compacted.insert("a".to_string());
+
+        // First partition call: everything needs fetching.
+        let (_cached, to_fetch) = cache.partition(&topics);
+        assert_eq!(to_fetch.len(), 2);
+
+        // Update with the fetch result.
+        cache.update(&to_fetch, &compacted);
+
+        // Second partition call: everything cached.
+        let (cached, to_fetch) = cache.partition(&topics);
+        assert_eq!(to_fetch.len(), 0);
+        assert_eq!(cached.len(), 1);
+        assert!(cached.contains("a"));
+    }
+
+    #[test]
+    fn compacted_cache_expired_entries_re_fetched() {
+        let cache = CompactedTopicsCache::new(Duration::from_millis(50));
+        let topics = vec!["a".to_string()];
+        let mut compacted = HashSet::new();
+        compacted.insert("a".to_string());
+
+        let (_cached, to_fetch) = cache.partition(&topics);
+        cache.update(&to_fetch, &compacted);
+
+        // Cached entry is fresh.
+        let (cached, to_fetch) = cache.partition(&topics);
+        assert!(cached.contains("a"));
+        assert!(to_fetch.is_empty());
+
+        // Wait for TTL to expire.
+        std::thread::sleep(Duration::from_millis(70));
+
+        // Cached entry is stale — partition() returns it for re-fetching.
+        let (cached, to_fetch) = cache.partition(&topics);
+        assert!(cached.is_empty());
+        assert_eq!(to_fetch, vec!["a"]);
+    }
+
+    #[test]
+    fn compacted_cache_prune_removes_unseen_topics() {
+        let cache = CompactedTopicsCache::new(Duration::from_secs(60));
+        let initial = vec!["a".to_string(), "b".to_string()];
+        let mut compacted = HashSet::new();
+        compacted.insert("a".to_string());
+        let (_cached, to_fetch) = cache.partition(&initial);
+        cache.update(&to_fetch, &compacted);
+
+        // Only "a" is still monitored. "b"'s cache entry should be dropped.
+        let remaining = vec!["a".to_string()];
+        cache.prune_to(&remaining);
+
+        let entries = cache.entries.lock().unwrap();
+        assert!(entries.contains_key("a"));
+        assert!(!entries.contains_key("b"));
     }
 }
