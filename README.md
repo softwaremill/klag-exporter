@@ -52,12 +52,27 @@ A high-performance Apache Kafka® consumer group lag exporter written in Rust. C
 - Shows 0 lag incorrectly for idle topics
 - Requires many poll cycles to build accurate tables
 
-**Our approach (targeted timestamp sampling):**
+**Our approach (two modes, default rate-based):**
 
-- Seeks directly to the consumer group's committed offset
-- Reads actual message timestamp — always accurate
+klag-exporter supports two time-lag strategies, selectable via `timestamp_sampling.mode`:
+
+#### `rate` mode (default since v0.2)
+
+- No consumer pool, no extra librdkafka clients — dramatically lower resident memory on large clusters
+- Keeps a short ring buffer of `(observation_time, high_watermark)` per partition
+- Rate = Δhigh_watermark / Δtime; `time_lag = (high_watermark − committed_offset) / rate`
+- Accurate for lag alerting (magnitude right); accuracy depends on steady producer rate across the history window
+- Returns no value (metric missing) on the first cycle after startup or topic creation (needs ≥ 2 samples) and on partitions producing below the configured floor
+
+#### `message` mode
+
+- Seeks directly to the consumer group's committed offset via a pooled BaseConsumer
+- Reads the actual message timestamp — exact
 - Handles idle producers correctly (shows true message age)
 - TTL-cached to prevent excessive broker load
+- Memory cost: each pooled BaseConsumer is a full librdkafka client (~5–15 MB) — keep `max_concurrent_fetches` small
+
+**When to choose which:** Rate is the right default for almost everyone. Pick message mode only if you have a regulatory / audit requirement for exact timestamps and your cluster is small enough that the consumer pool's memory overhead is acceptable.
 
 ### Compaction and Retention Limitations
 
@@ -222,6 +237,16 @@ granularity = "partition"  # "topic" or "partition"
 
 [exporter.timestamp_sampling]
 enabled = true
+# "rate" (default, recommended for large clusters) or "message".
+# See "Time Lag Modes" below for tradeoffs.
+mode = "rate"
+
+# Rate-mode tuning (only used when mode = "rate"):
+rate_history_samples = 5           # ring buffer size per partition
+rate_history_max_age = "10m"       # drop samples older than this
+rate_min_msgs_per_sec = 0.01       # below this rate → time lag reported as missing
+
+# Message-mode tuning (only used when mode = "message"):
 cache_ttl = "60s"
 max_concurrent_fetches = 10
 
