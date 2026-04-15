@@ -251,6 +251,241 @@ pub fn list_offsets_batched(
     }
 }
 
+/// Ready-to-consume representation of a consumer group description. Mirrors
+/// `kafka::client::GroupDescription` shape so callers don't need to translate
+/// beyond trivial field rename.
+#[derive(Debug, Clone)]
+pub struct BatchedGroupDescription {
+    pub group_id: String,
+    pub state: String,
+    pub members: Vec<BatchedMember>,
+}
+
+#[derive(Debug, Clone)]
+pub struct BatchedMember {
+    pub member_id: String,
+    pub client_id: String,
+    pub client_host: String,
+    pub assignments: Vec<TopicPartition>,
+}
+
+/// Describe consumer groups in batches via `rd_kafka_DescribeConsumerGroups`.
+/// Chunks the input into sub-calls of at most `chunk_size` groups each and
+/// aggregates results. Per-group errors are logged at WARN and the group is
+/// omitted from the returned Vec.
+pub fn describe_consumer_groups_batched(
+    admin: &AdminClient<DefaultClientContext>,
+    group_ids: &[&str],
+    timeout: Duration,
+    chunk_size: usize,
+) -> Result<Vec<BatchedGroupDescription>> {
+    if group_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let chunk_size = chunk_size.max(1);
+    let mut out = Vec::with_capacity(group_ids.len());
+    for chunk in group_ids.chunks(chunk_size) {
+        let mut part = describe_consumer_groups_one_chunk(admin, chunk, timeout)?;
+        out.append(&mut part);
+    }
+    Ok(out)
+}
+
+fn describe_consumer_groups_one_chunk(
+    admin: &AdminClient<DefaultClientContext>,
+    group_ids: &[&str],
+    timeout: Duration,
+) -> Result<Vec<BatchedGroupDescription>> {
+    let timeout_ms = timeout.as_millis().min(i32::MAX as u128) as i32;
+    let rk = admin_native_ptr(admin);
+
+    // Build array of *const c_char pointing to CString buffers. `cstrings`
+    // must outlive the FFI call (ptrs borrow from it).
+    let cstrings: Vec<CString> = group_ids
+        .iter()
+        .map(|g| cstring_or_err(g))
+        .collect::<Result<Vec<_>>>()?;
+    let mut ptrs: Vec<*const c_char> = cstrings.iter().map(|c| c.as_ptr()).collect();
+
+    struct Cleanup {
+        options: *mut rd_kafka_AdminOptions_t,
+        queue: *mut rd_kafka_queue_t,
+        event: *mut rd_kafka_event_t,
+    }
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            unsafe {
+                if !self.event.is_null() {
+                    rd_kafka_event_destroy(self.event);
+                }
+                if !self.queue.is_null() {
+                    rd_kafka_queue_destroy(self.queue);
+                }
+                if !self.options.is_null() {
+                    rd_kafka_AdminOptions_destroy(self.options);
+                }
+            }
+        }
+    }
+
+    unsafe {
+        let options = rd_kafka_AdminOptions_new(
+            rk,
+            rd_kafka_admin_op_t::RD_KAFKA_ADMIN_OP_DESCRIBECONSUMERGROUPS,
+        );
+        if options.is_null() {
+            return Err(KlagError::Admin(
+                "Failed to create AdminOptions (DescribeConsumerGroups)".into(),
+            ));
+        }
+        let mut cleanup = Cleanup {
+            options,
+            queue: ptr::null_mut(),
+            event: ptr::null_mut(),
+        };
+
+        let mut errstr_buf = [0 as c_char; 512];
+        let err = rd_kafka_AdminOptions_set_request_timeout(
+            options,
+            timeout_ms,
+            errstr_buf.as_mut_ptr(),
+            errstr_buf.len(),
+        );
+        if err != rd_kafka_resp_err_t::RD_KAFKA_RESP_ERR_NO_ERROR {
+            return Err(KlagError::Admin(format!(
+                "Failed to set request timeout (DescribeConsumerGroups): {}",
+                errstr_to_string(&errstr_buf)
+            )));
+        }
+
+        let queue = rd_kafka_queue_new(rk);
+        if queue.is_null() {
+            return Err(KlagError::Admin(
+                "Failed to create queue (DescribeConsumerGroups)".into(),
+            ));
+        }
+        cleanup.queue = queue;
+
+        rd_kafka_DescribeConsumerGroups(rk, ptrs.as_mut_ptr(), ptrs.len(), options, queue);
+
+        let event = rd_kafka_queue_poll(queue, timeout_ms);
+        if event.is_null() {
+            return Err(KlagError::Admin(
+                "DescribeConsumerGroups timed out".into(),
+            ));
+        }
+        cleanup.event = event;
+
+        let event_type = rd_kafka_event_type(event);
+        if event_type != RD_KAFKA_EVENT_DESCRIBECONSUMERGROUPS_RESULT {
+            return Err(KlagError::Admin(format!(
+                "Unexpected event type (DescribeConsumerGroups): {event_type}"
+            )));
+        }
+
+        let resp_err = rd_kafka_event_error(event);
+        if resp_err != rd_kafka_resp_err_t::RD_KAFKA_RESP_ERR_NO_ERROR {
+            let err_cstr = rd_kafka_event_error_string(event);
+            let err_msg = if err_cstr.is_null() {
+                "unknown error".to_string()
+            } else {
+                CStr::from_ptr(err_cstr).to_string_lossy().to_string()
+            };
+            return Err(KlagError::Admin(format!(
+                "DescribeConsumerGroups failed: {err_msg}"
+            )));
+        }
+
+        let result = rd_kafka_event_DescribeConsumerGroups_result(event);
+        if result.is_null() {
+            return Err(KlagError::Admin(
+                "DescribeConsumerGroups result is null".into(),
+            ));
+        }
+
+        let mut n: usize = 0;
+        let groups_ptr = rd_kafka_DescribeConsumerGroups_result_groups(result, &mut n);
+        let mut out = Vec::with_capacity(n);
+        if groups_ptr.is_null() || n == 0 {
+            return Ok(out);
+        }
+
+        for i in 0..n {
+            let grp = *groups_ptr.add(i);
+            let group_id = ptr_to_string(rd_kafka_ConsumerGroupDescription_group_id(grp));
+            let grp_err = rd_kafka_ConsumerGroupDescription_error(grp);
+            if !grp_err.is_null() {
+                let code = rd_kafka_error_code(grp_err);
+                if code != rd_kafka_resp_err_t::RD_KAFKA_RESP_ERR_NO_ERROR {
+                    let msg = ptr_to_string(rd_kafka_error_string(grp_err));
+                    warn!(group = %group_id, error = %msg, "DescribeConsumerGroups per-group error");
+                    continue;
+                }
+            }
+
+            let state = rd_kafka_ConsumerGroupDescription_state(grp);
+            let state_str = ptr_to_string(rd_kafka_consumer_group_state_name(state));
+
+            let member_count = rd_kafka_ConsumerGroupDescription_member_count(grp);
+            let mut members = Vec::with_capacity(member_count);
+            for m_idx in 0..member_count {
+                let member = rd_kafka_ConsumerGroupDescription_member(grp, m_idx);
+                if member.is_null() {
+                    continue;
+                }
+                let member_id = ptr_to_string(rd_kafka_MemberDescription_consumer_id(member));
+                let client_id = ptr_to_string(rd_kafka_MemberDescription_client_id(member));
+                let client_host = ptr_to_string(rd_kafka_MemberDescription_host(member));
+
+                let assignment = rd_kafka_MemberDescription_assignment(member);
+                let mut assignments = Vec::new();
+                if !assignment.is_null() {
+                    let tpl_ptr = rd_kafka_MemberAssignment_partitions(assignment);
+                    if !tpl_ptr.is_null() {
+                        let tpl = &*tpl_ptr;
+                        for j in 0..tpl.cnt {
+                            let el = &*tpl.elems.add(j as usize);
+                            if el.topic.is_null() {
+                                continue;
+                            }
+                            let topic = CStr::from_ptr(el.topic).to_string_lossy().to_string();
+                            assignments.push(TopicPartition::new(topic, el.partition));
+                        }
+                    }
+                }
+
+                members.push(BatchedMember {
+                    member_id,
+                    client_id,
+                    client_host,
+                    assignments,
+                });
+            }
+
+            out.push(BatchedGroupDescription {
+                group_id,
+                state: state_str,
+                members,
+            });
+        }
+
+        debug!(
+            requested = group_ids.len(),
+            returned = out.len(),
+            "Batched DescribeConsumerGroups complete"
+        );
+        Ok(out)
+    }
+}
+
+unsafe fn ptr_to_string(p: *const c_char) -> String {
+    if p.is_null() {
+        String::new()
+    } else {
+        CStr::from_ptr(p).to_string_lossy().to_string()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
