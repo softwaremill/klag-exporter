@@ -38,14 +38,55 @@ pub enum Granularity {
     Partition,
 }
 
+#[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum TimestampSamplingMode {
+    /// Read the actual message at the committed offset via a pooled
+    /// BaseConsumer and use its produce timestamp. Exact, but the pool
+    /// occupies meaningful resident memory and creates per-cycle FFI
+    /// churn on large clusters.
+    Message,
+    /// Estimate time lag from the observed rate of change of high
+    /// watermarks. Pure CPU, no consumer pool, no FFI. Accuracy depends
+    /// on steady producer rate across the history window — good enough
+    /// for lag alerting, not appropriate for audit-grade timestamp
+    /// tracking.
+    Rate,
+}
+
 #[derive(Debug, Deserialize, Clone)]
 pub struct TimestampSamplingConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
+    /// How the exporter derives the "seconds of lag" metric. Default is
+    /// `rate` — much cheaper on large clusters and scales to thousands
+    /// of partitions without a consumer pool. Set to `message` to restore
+    /// the pre-Tier-3 behavior (read the actual message at the committed
+    /// offset and subtract its produce timestamp from "now").
+    #[serde(default = "default_timestamp_sampling_mode")]
+    pub mode: TimestampSamplingMode,
+    /// Cache TTL for the message-mode sampler. Ignored in `rate` mode.
     #[serde(with = "humantime_serde", default = "default_cache_ttl")]
     pub cache_ttl: Duration,
+    /// Maximum concurrent message fetches in `message` mode. Ignored in
+    /// `rate` mode (rate mode does no I/O).
     #[serde(default = "default_max_concurrent_fetches")]
     pub max_concurrent_fetches: usize,
+    /// `rate` mode: maximum number of (time, high_watermark) samples
+    /// retained per partition. Larger = smoother rate estimate, more
+    /// memory. Default 5.
+    #[serde(default = "default_rate_history_samples")]
+    pub rate_history_samples: usize,
+    /// `rate` mode: samples older than this are evicted. Default 10
+    /// minutes. On long poll intervals (> a few minutes) raise this so
+    /// the ring buffer has enough points to compute a stable rate.
+    #[serde(with = "humantime_serde", default = "default_rate_history_max_age")]
+    pub rate_history_max_age: Duration,
+    /// `rate` mode: producers observed to be running below this rate are
+    /// treated as idle and time-lag is reported as missing rather than
+    /// an unreliable division. Default 0.01 msg/sec.
+    #[serde(default = "default_rate_min_msgs_per_sec")]
+    pub rate_min_msgs_per_sec: f64,
 }
 
 /// Performance tuning configuration for large clusters.
@@ -192,6 +233,22 @@ fn default_max_concurrent_fetches() -> usize {
     5
 }
 
+fn default_timestamp_sampling_mode() -> TimestampSamplingMode {
+    TimestampSamplingMode::Rate
+}
+
+fn default_rate_history_samples() -> usize {
+    5
+}
+
+fn default_rate_history_max_age() -> Duration {
+    Duration::from_secs(600)
+}
+
+fn default_rate_min_msgs_per_sec() -> f64 {
+    0.01
+}
+
 fn default_kafka_timeout() -> Duration {
     Duration::from_secs(30)
 }
@@ -264,8 +321,12 @@ impl Default for TimestampSamplingConfig {
     fn default() -> Self {
         Self {
             enabled: true,
+            mode: default_timestamp_sampling_mode(),
             cache_ttl: default_cache_ttl(),
             max_concurrent_fetches: default_max_concurrent_fetches(),
+            rate_history_samples: default_rate_history_samples(),
+            rate_history_max_age: default_rate_history_max_age(),
+            rate_min_msgs_per_sec: default_rate_min_msgs_per_sec(),
         }
     }
 }
@@ -366,30 +427,68 @@ impl Config {
                 "performance.max_concurrent_watermarks must be at least 1".to_string(),
             ));
         }
+
+        // Timestamp-sampling validation. Only enforce the constraints that
+        // actually matter for the configured mode so rate-mode users aren't
+        // forced to tune message-mode knobs (and vice versa).
+        let ts = &self.exporter.timestamp_sampling;
+        if ts.enabled && ts.mode == TimestampSamplingMode::Message && ts.max_concurrent_fetches == 0
+        {
+            return Err(KlagError::Config(
+                "timestamp_sampling.max_concurrent_fetches must be >= 1 when mode = 'message'"
+                    .to_string(),
+            ));
+        }
+        if ts.enabled && ts.mode == TimestampSamplingMode::Rate {
+            if ts.rate_history_samples < 2 {
+                return Err(KlagError::Config(
+                    "timestamp_sampling.rate_history_samples must be >= 2 (need two samples \
+                     to compute a rate)"
+                        .to_string(),
+                ));
+            }
+            if !ts.rate_min_msgs_per_sec.is_finite() || ts.rate_min_msgs_per_sec < 0.0 {
+                return Err(KlagError::Config(format!(
+                    "timestamp_sampling.rate_min_msgs_per_sec ({}) must be finite and >= 0",
+                    ts.rate_min_msgs_per_sec
+                )));
+            }
+        }
         // The blocking-thread pool must be able to hold every concurrent FFI
         // call our hot path spawns simultaneously. `max_concurrent_groups`
         // is the dominant consumer; the timestamp sampler adds up to
-        // `max_concurrent_fetches` more — but only when sampling is enabled.
-        // If the pool is too small, tasks queue behind each other and we
-        // effectively serialize — silently undoing the Tier 1 win.
-        let sampler_contribution = if self.exporter.timestamp_sampling.enabled {
+        // `max_concurrent_fetches` more — but only when sampling is enabled
+        // AND in `message` mode. Rate mode does no I/O and consumes no
+        // blocking threads. If the pool is too small, tasks queue behind
+        // each other and we effectively serialize — silently undoing the
+        // Tier 1 win.
+        let sampler_uses_blocking_threads = self.exporter.timestamp_sampling.enabled
+            && matches!(
+                self.exporter.timestamp_sampling.mode,
+                TimestampSamplingMode::Message
+            );
+        let sampler_contribution = if sampler_uses_blocking_threads {
             self.exporter.timestamp_sampling.max_concurrent_fetches
         } else {
             0
         };
         let min_needed = self.exporter.performance.max_concurrent_groups + sampler_contribution + 4; // small headroom for watermark / compacted-topic / metadata FFI
         if self.exporter.performance.max_blocking_threads < min_needed {
+            let sampling_state = match (
+                self.exporter.timestamp_sampling.enabled,
+                self.exporter.timestamp_sampling.mode,
+            ) {
+                (false, _) => "disabled",
+                (true, TimestampSamplingMode::Rate) => "rate (no FFI)",
+                (true, TimestampSamplingMode::Message) => "message",
+            };
             return Err(KlagError::Config(format!(
                 "performance.max_blocking_threads ({}) must be >= max_concurrent_groups ({}) + \
                  timestamp_sampling.max_concurrent_fetches ({}, sampling {}) + 4 = {}",
                 self.exporter.performance.max_blocking_threads,
                 self.exporter.performance.max_concurrent_groups,
                 sampler_contribution,
-                if self.exporter.timestamp_sampling.enabled {
-                    "enabled"
-                } else {
-                    "disabled"
-                },
+                sampling_state,
                 min_needed,
             )));
         }
@@ -642,6 +741,11 @@ bootstrap_servers = "localhost:9092"
         assert_eq!(config.exporter.http_host, "0.0.0.0");
         assert_eq!(config.exporter.granularity, Granularity::Topic);
         assert!(config.exporter.timestamp_sampling.enabled);
+        assert_eq!(
+            config.exporter.timestamp_sampling.mode,
+            TimestampSamplingMode::Rate,
+            "default mode should be rate (Tier 3)"
+        );
         assert!(!config.exporter.otel.enabled);
         // Performance defaults
         assert_eq!(
@@ -703,10 +807,13 @@ bootstrap_servers = "localhost:9092"
 
     #[test]
     fn test_max_blocking_threads_rejected_when_too_small() {
-        // default max_concurrent_groups=10, max_concurrent_fetches=5,
-        // so minimum blocking threads = 10 + 5 + 4 = 19. 16 must fail.
+        // Message mode uses blocking threads. Default max_concurrent_groups=10,
+        // max_concurrent_fetches=5, so minimum = 10 + 5 + 4 = 19. 16 must fail.
         let config_content = r#"
 [exporter]
+
+[exporter.timestamp_sampling]
+mode = "message"
 
 [exporter.performance]
 max_blocking_threads = 16
@@ -725,6 +832,73 @@ bootstrap_servers = "localhost:9092"
             "unexpected error: {msg}"
         );
         assert!(msg.contains("= 19"), "unexpected error: {msg}");
+    }
+
+    #[test]
+    fn test_message_mode_rejects_zero_concurrent_fetches() {
+        let config_content = r#"
+[exporter]
+
+[exporter.timestamp_sampling]
+mode = "message"
+max_concurrent_fetches = 0
+
+[[clusters]]
+name = "test"
+bootstrap_servers = "localhost:9092"
+"#;
+        let mut file = NamedTempFile::new().unwrap();
+        file.write_all(config_content.as_bytes()).unwrap();
+        let err = Config::load(Some(file.path().to_str().unwrap())).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("max_concurrent_fetches must be >= 1"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_rate_mode_rejects_one_history_sample() {
+        let config_content = r#"
+[exporter]
+
+[exporter.timestamp_sampling]
+rate_history_samples = 1
+
+[[clusters]]
+name = "test"
+bootstrap_servers = "localhost:9092"
+"#;
+        let mut file = NamedTempFile::new().unwrap();
+        file.write_all(config_content.as_bytes()).unwrap();
+        let err = Config::load(Some(file.path().to_str().unwrap())).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("rate_history_samples must be >= 2"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_rate_mode_rejects_negative_min_rate() {
+        let config_content = r#"
+[exporter]
+
+[exporter.timestamp_sampling]
+rate_min_msgs_per_sec = -1.0
+
+[[clusters]]
+name = "test"
+bootstrap_servers = "localhost:9092"
+"#;
+        let mut file = NamedTempFile::new().unwrap();
+        file.write_all(config_content.as_bytes()).unwrap();
+        let err = Config::load(Some(file.path().to_str().unwrap())).unwrap_err();
+        assert!(
+            err.to_string().contains("rate_min_msgs_per_sec")
+                && err.to_string().contains("must be finite and >= 0"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
