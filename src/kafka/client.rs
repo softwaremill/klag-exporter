@@ -135,6 +135,14 @@ impl KafkaClient {
         Arc::clone(&self.admin.lock().unwrap_or_else(|p| p.into_inner()))
     }
 
+    /// Public accessor for the underlying AdminClient Arc. Used by batched
+    /// Admin API wrappers in `kafka::admin` and by integration tests. The
+    /// caller holds the Arc for the duration of the FFI call to keep the
+    /// native handle valid.
+    pub fn admin_handle(&self) -> Arc<AdminClient<DefaultClientContext>> {
+        self.admin()
+    }
+
     /// Get a snapshot of the current consumer (cheap Arc clone).
     fn consumer(&self) -> Arc<BaseConsumer> {
         Arc::clone(&self.consumer.lock().unwrap_or_else(|p| p.into_inner()))
