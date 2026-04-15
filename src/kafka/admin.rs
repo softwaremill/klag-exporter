@@ -19,8 +19,30 @@ use std::collections::HashMap;
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 use std::ptr;
+use std::sync::Arc;
 use std::time::Duration;
 use tracing::{debug, warn};
+
+/// Per-call topic-name interner: one `Arc<str>` allocation per unique topic,
+/// so sibling partitions of the same topic share storage in the result map.
+/// On large clusters the same batched `ListOffsets` result contains every
+/// partition on the cluster — without interning, 19K `Arc<str>` allocations
+/// are wasted on topic names that only have a few dozen unique values.
+#[derive(Default)]
+struct TopicInterner {
+    by_name: HashMap<String, Arc<str>>,
+}
+
+impl TopicInterner {
+    fn intern(&mut self, topic: &str) -> Arc<str> {
+        if let Some(a) = self.by_name.get(topic) {
+            return Arc::clone(a);
+        }
+        let a: Arc<str> = Arc::from(topic);
+        self.by_name.insert(topic.to_string(), Arc::clone(&a));
+        a
+    }
+}
 
 /// Offset spec for `list_offsets_batched` — mirrors `RD_KAFKA_OFFSET_SPEC_*`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -205,6 +227,8 @@ pub fn list_offsets_batched(
             return Ok(out);
         }
 
+        let mut interner = TopicInterner::default();
+
         for i in 0..n_infos {
             let info = *infos_ptr.add(i);
             let tp_ptr = rd_kafka_ListOffsetsResultInfo_topic_partition(info);
@@ -238,8 +262,12 @@ pub fn list_offsets_batched(
             if tp_ref.topic.is_null() {
                 continue;
             }
-            let topic = CStr::from_ptr(tp_ref.topic).to_string_lossy().to_string();
-            out.insert(TopicPartition::new(topic, tp_ref.partition), tp_ref.offset);
+            let topic_str = CStr::from_ptr(tp_ref.topic).to_string_lossy();
+            let topic_arc = interner.intern(topic_str.as_ref());
+            out.insert(
+                TopicPartition::new(topic_arc, tp_ref.partition),
+                tp_ref.offset,
+            );
         }
 
         debug!(
@@ -730,5 +758,15 @@ mod tests {
         // RD_KAFKA_OFFSET_SPEC_EARLIEST == -2, _LATEST == -1 (from rdkafka.h).
         assert_eq!(OffsetSpec::Earliest.as_c_value(), -2);
         assert_eq!(OffsetSpec::Latest.as_c_value(), -1);
+    }
+
+    #[test]
+    fn topic_interner_returns_same_arc_for_same_name() {
+        let mut interner = TopicInterner::default();
+        let a = interner.intern("foo");
+        let b = interner.intern("foo");
+        assert!(Arc::ptr_eq(&a, &b), "same topic must share the Arc");
+        let c = interner.intern("bar");
+        assert!(!Arc::ptr_eq(&a, &c));
     }
 }

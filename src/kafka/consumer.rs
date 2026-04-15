@@ -161,7 +161,7 @@ impl TimestampConsumer {
                     let timestamp = msg.timestamp().to_millis();
 
                     debug!(
-                        topic = tp.topic,
+                        topic = %tp.topic,
                         partition = tp.partition,
                         requested_offset = offset,
                         actual_offset = msg.offset(),
@@ -173,7 +173,7 @@ impl TimestampConsumer {
                 }
                 Err(e) => {
                     warn!(
-                        topic = tp.topic,
+                        topic = %tp.topic,
                         partition = tp.partition,
                         error = %e,
                         "Failed to fetch message"
@@ -183,7 +183,7 @@ impl TimestampConsumer {
             },
             None => {
                 debug!(
-                    topic = tp.topic,
+                    topic = %tp.topic,
                     partition = tp.partition,
                     offset = offset,
                     "No message available at offset (may be beyond high watermark)"

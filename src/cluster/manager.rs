@@ -391,7 +391,7 @@ impl ClusterManager {
                 Ok(Ok(((group_id, tp), Ok(None)))) => {
                     debug!(
                         group = group_id,
-                        topic = tp.topic,
+                        topic = %tp.topic,
                         partition = tp.partition,
                         "No timestamp available"
                     );
@@ -399,7 +399,7 @@ impl ClusterManager {
                 Ok(Ok(((group_id, tp), Err(e)))) => {
                     warn!(
                         group = group_id,
-                        topic = tp.topic,
+                        topic = %tp.topic,
                         partition = tp.partition,
                         error = %e,
                         "Failed to fetch timestamp"

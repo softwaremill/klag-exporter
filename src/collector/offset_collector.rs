@@ -363,8 +363,13 @@ impl OffsetCollector {
                 continue;
             }
             topics.push(name.to_string());
+            // Intern the topic name once per topic so the per-partition
+            // TopicPartition entries share one Arc<str> allocation. On a
+            // cluster with avg 10 partitions/topic this cuts topic-name
+            // heap allocs by 90%.
+            let topic_arc: Arc<str> = Arc::from(name);
             for p in topic.partitions() {
-                partitions.push(TopicPartition::new(name, p.id()));
+                partitions.push(TopicPartition::new(Arc::clone(&topic_arc), p.id()));
             }
         }
         Ok(self.metadata_cache.set(partitions, topics))

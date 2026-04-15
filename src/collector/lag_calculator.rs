@@ -118,7 +118,7 @@ impl LagCalculator {
             .iter()
             .map(|(tp, (low, high))| PartitionOffsetMetric {
                 cluster_name: snapshot.cluster_name.clone(),
-                topic: tp.topic.clone(),
+                topic: tp.topic.to_string(),
                 partition: tp.partition,
                 earliest_offset: *low,
                 latest_offset: *high,
@@ -181,13 +181,15 @@ impl LagCalculator {
                 } else {
                     Some(0.0)
                 };
-                // Compaction detected if topic has cleanup.policy=compact
-                let compaction_detected = compacted_topics.contains(&tp.topic);
+                // Compaction detected if topic has cleanup.policy=compact.
+                // `compacted_topics` is a HashSet<String>; deref the Arc<str>
+                // to &str so the lookup uses str's Hash/Eq.
+                let compaction_detected = compacted_topics.contains(&*tp.topic);
 
                 partition_metrics.push(PartitionLagMetric {
                     cluster_name: snapshot.cluster_name.clone(),
                     group_id: group.group_id.clone(),
-                    topic: tp.topic.clone(),
+                    topic: tp.topic.to_string(),
                     partition: tp.partition,
                     member_host,
                     consumer_id,
@@ -215,7 +217,7 @@ impl LagCalculator {
                         Some(group_max_lag_seconds.map_or(secs, |current| current.max(secs)));
                 }
 
-                *topic_lags.entry(tp.topic.clone()).or_insert(0) += lag;
+                *topic_lags.entry(tp.topic.to_string()).or_insert(0) += lag;
             }
 
             // Add group-level metrics

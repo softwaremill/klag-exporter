@@ -13,12 +13,20 @@ use tracing::{debug, info, instrument, warn};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct TopicPartition {
-    pub topic: String,
+    /// `Arc<str>` rather than `String` so multiple partitions of the same
+    /// topic can share one heap allocation for the topic name. On clusters
+    /// with many partitions per topic (and whenever a `HashMap<TopicPartition,
+    /// _>` is cloned) this meaningfully cuts heap churn.
+    pub topic: Arc<str>,
     pub partition: i32,
 }
 
 impl TopicPartition {
-    pub fn new(topic: impl Into<String>, partition: i32) -> Self {
+    /// Build a fresh `TopicPartition`. Accepts anything that can produce an
+    /// `Arc<str>`: `&str`, `String`, `Arc<str>`, `&Arc<str>`, etc. Callers
+    /// that already hold a shared `Arc<str>` (e.g., from a per-cycle topic
+    /// interner) should pass `Arc::clone(&shared)` to avoid a fresh alloc.
+    pub fn new(topic: impl Into<Arc<str>>, partition: i32) -> Self {
         Self {
             topic: topic.into(),
             partition,
