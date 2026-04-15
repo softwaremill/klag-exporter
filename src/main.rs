@@ -75,7 +75,8 @@ fn main() -> anyhow::Result<()> {
     // concurrency cap; the Tier 1 batched ListOffsets refactor replaced
     // that fan-out with two broker-level calls, so this knob has no
     // effect. Only warn when the user explicitly set a non-default value.
-    if config.exporter.performance.max_concurrent_watermarks != 50 {
+    let watermarks_default = crate::config::PerformanceConfig::default().max_concurrent_watermarks;
+    if config.exporter.performance.max_concurrent_watermarks != watermarks_default {
         info!(
             configured_value = config.exporter.performance.max_concurrent_watermarks,
             "performance.max_concurrent_watermarks is deprecated and has no effect since the \

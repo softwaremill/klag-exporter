@@ -336,20 +336,38 @@ pub async fn describe_consumer_groups_batched(
         .map(|c| c.iter().map(|s| s.to_string()).collect())
         .collect();
 
+    // Each chunk carries enough identifying context to make partial-
+    // failure warnings actionable: chunk index, chunk size, and the
+    // first / last group id in the chunk.
+    #[derive(Clone)]
+    struct ChunkMeta {
+        index: usize,
+        size: usize,
+        first: String,
+        last: String,
+    }
+
     let semaphore = Arc::new(tokio::sync::Semaphore::new(max_concurrent));
     let mut handles = Vec::with_capacity(chunks.len());
 
-    for chunk in chunks {
+    for (index, chunk) in chunks.into_iter().enumerate() {
+        let meta = ChunkMeta {
+            index,
+            size: chunk.len(),
+            first: chunk.first().cloned().unwrap_or_default(),
+            last: chunk.last().cloned().unwrap_or_default(),
+        };
         let permit = Arc::clone(&semaphore);
         let admin = Arc::clone(&admin);
         handles.push(tokio::spawn(async move {
             let _permit: tokio::sync::OwnedSemaphorePermit =
                 permit.acquire_owned().await.expect("semaphore closed");
-            tokio::task::spawn_blocking(move || {
+            let result = tokio::task::spawn_blocking(move || {
                 let refs: Vec<&str> = chunk.iter().map(|s| s.as_str()).collect();
                 describe_consumer_groups_one_chunk(&admin, &refs, timeout, parse_assignments)
             })
-            .await
+            .await;
+            (meta, result)
         }));
     }
 
@@ -357,15 +375,48 @@ pub async fn describe_consumer_groups_batched(
     let mut out = Vec::with_capacity(group_ids.len());
     for r in results {
         match r {
-            Ok(Ok(Ok(mut part))) => out.append(&mut part),
-            Ok(Ok(Err(e))) => {
-                warn!(error = %e, "DescribeConsumerGroups chunk failed");
+            Ok((_meta, Ok(Ok(mut part)))) => out.append(&mut part),
+            Ok((meta, Ok(Err(e)))) => {
+                warn!(
+                    error = %e,
+                    chunk_index = meta.index,
+                    chunk_size = meta.size,
+                    first_group = %meta.first,
+                    last_group = %meta.last,
+                    "DescribeConsumerGroups chunk failed"
+                );
             }
-            Ok(Err(e)) => {
-                warn!(error = %e, "DescribeConsumerGroups chunk task panicked");
+            Ok((meta, Err(e))) => {
+                // A JoinError from spawn_blocking. Distinguish cancellation
+                // from panic so operators don't chase a bug that wasn't one.
+                let mode = if e.is_cancelled() {
+                    "cancelled"
+                } else if e.is_panic() {
+                    "panicked"
+                } else {
+                    "failed"
+                };
+                warn!(
+                    error = %e,
+                    chunk_index = meta.index,
+                    chunk_size = meta.size,
+                    first_group = %meta.first,
+                    last_group = %meta.last,
+                    "DescribeConsumerGroups chunk task {}",
+                    mode
+                );
             }
             Err(e) => {
-                warn!(error = %e, "DescribeConsumerGroups join error");
+                // Outer tokio::spawn JoinError. Chunk meta is not available
+                // here because the outer task owned it — log what we have.
+                let mode = if e.is_cancelled() {
+                    "cancelled"
+                } else if e.is_panic() {
+                    "panicked"
+                } else {
+                    "failed"
+                };
+                warn!(error = %e, "DescribeConsumerGroups outer task {}", mode);
             }
         }
     }
