@@ -50,8 +50,7 @@ struct Args {
     log_level: String,
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
     // Initialize logging
@@ -59,14 +58,30 @@ async fn main() -> anyhow::Result<()> {
 
     info!("Starting klag-exporter");
 
-    // Load configuration
+    // Load configuration before building the runtime — the blocking-thread
+    // pool size comes from config, and we want an early, clear error on
+    // config problems rather than a cryptic runtime-setup failure.
     let config = Config::load(Some(&args.config))?;
     info!(
         clusters = config.clusters.len(),
         poll_interval = ?config.exporter.poll_interval,
+        max_blocking_threads = config.exporter.performance.max_blocking_threads,
         "Configuration loaded"
     );
 
+    // Bound the tokio blocking-thread pool. The default (512) commits up to
+    // several GB of virtual memory just for native thread stacks; this
+    // exporter only needs enough threads to cover concurrent FFI calls from
+    // the collector + timestamp sampler.
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .max_blocking_threads(config.exporter.performance.max_blocking_threads)
+        .build()?;
+
+    runtime.block_on(async_main(config))
+}
+
+async fn async_main(config: Config) -> anyhow::Result<()> {
     // Create shared metrics registry
     let registry = Arc::new(MetricsRegistry::new());
 

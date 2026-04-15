@@ -13,12 +13,20 @@ use tracing::{debug, info, instrument, warn};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct TopicPartition {
-    pub topic: String,
+    /// `Arc<str>` rather than `String` so multiple partitions of the same
+    /// topic can share one heap allocation for the topic name. On clusters
+    /// with many partitions per topic (and whenever a `HashMap<TopicPartition,
+    /// _>` is cloned) this meaningfully cuts heap churn.
+    pub topic: Arc<str>,
     pub partition: i32,
 }
 
 impl TopicPartition {
-    pub fn new(topic: impl Into<String>, partition: i32) -> Self {
+    /// Build a fresh `TopicPartition`. Accepts anything that can produce an
+    /// `Arc<str>`: `&str`, `String`, `Arc<str>`, `&Arc<str>`, etc. Callers
+    /// that already hold a shared `Arc<str>` (e.g., from a per-cycle topic
+    /// interner) should pass `Arc::clone(&shared)` to avoid a fresh alloc.
+    pub fn new(topic: impl Into<Arc<str>>, partition: i32) -> Self {
         Self {
             topic: topic.into(),
             partition,
@@ -195,12 +203,27 @@ impl KafkaClient {
     /// which dominated collection time on large clusters (O(groups) serial
     /// round trips). `protocol_type`/`protocol` fields are not populated — they
     /// are not consumed downstream (marked `#[allow(dead_code)]`).
+    /// Describe consumer groups via batched FFI. Pass `parse_assignments =
+    /// false` to skip the per-member assignment-parsing step (saves
+    /// O(groups × members × partitions-per-member) work per cycle). The
+    /// data is only consumed by per-partition metrics, so the default
+    /// topic-granularity mode should pass `false`.
     #[instrument(skip(self, group_ids), fields(cluster = %self.config.name, count = group_ids.len()))]
-    pub fn describe_consumer_groups(&self, group_ids: &[&str]) -> Result<Vec<GroupDescription>> {
+    pub fn describe_consumer_groups(
+        &self,
+        group_ids: &[&str],
+        parse_assignments: bool,
+    ) -> Result<Vec<GroupDescription>> {
         use crate::kafka::admin::describe_consumer_groups_batched;
 
         let admin = self.admin();
-        let batched = describe_consumer_groups_batched(&admin, group_ids, self.timeout, 100)?;
+        let batched = describe_consumer_groups_batched(
+            &admin,
+            group_ids,
+            self.timeout,
+            100,
+            parse_assignments,
+        )?;
 
         Ok(batched
             .into_iter()

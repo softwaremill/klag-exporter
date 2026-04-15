@@ -19,8 +19,35 @@ use std::collections::HashMap;
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 use std::ptr;
+use std::sync::Arc;
 use std::time::Duration;
 use tracing::{debug, warn};
+
+/// Per-call topic-name interner: one `Arc<str>` allocation per unique topic,
+/// so sibling partitions of the same topic share storage in the result map.
+/// On large clusters the same batched `ListOffsets` result contains every
+/// partition on the cluster — without interning, 19K `Arc<str>` allocations
+/// are wasted on topic names that only have a few dozen unique values.
+///
+/// The set is keyed directly by `Arc<str>`; `get_key_value(&str)` works
+/// because `Arc<T>: Borrow<T>`, so the lookup hashes the topic as a `str`
+/// but returns the existing `Arc<str>` key to clone. This keeps the
+/// allocation count at exactly one `Arc<str>` per unique topic.
+#[derive(Default)]
+struct TopicInterner {
+    by_name: HashMap<Arc<str>, ()>,
+}
+
+impl TopicInterner {
+    fn intern(&mut self, topic: &str) -> Arc<str> {
+        if let Some((a, ())) = self.by_name.get_key_value(topic) {
+            return Arc::clone(a);
+        }
+        let a: Arc<str> = Arc::from(topic);
+        self.by_name.insert(Arc::clone(&a), ());
+        a
+    }
+}
 
 /// Offset spec for `list_offsets_batched` — mirrors `RD_KAFKA_OFFSET_SPEC_*`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -205,6 +232,8 @@ pub fn list_offsets_batched(
             return Ok(out);
         }
 
+        let mut interner = TopicInterner::default();
+
         for i in 0..n_infos {
             let info = *infos_ptr.add(i);
             let tp_ptr = rd_kafka_ListOffsetsResultInfo_topic_partition(info);
@@ -238,8 +267,12 @@ pub fn list_offsets_batched(
             if tp_ref.topic.is_null() {
                 continue;
             }
-            let topic = CStr::from_ptr(tp_ref.topic).to_string_lossy().to_string();
-            out.insert(TopicPartition::new(topic, tp_ref.partition), tp_ref.offset);
+            let topic_str = CStr::from_ptr(tp_ref.topic).to_string_lossy();
+            let topic_arc = interner.intern(topic_str.as_ref());
+            out.insert(
+                TopicPartition::new(topic_arc, tp_ref.partition),
+                tp_ref.offset,
+            );
         }
 
         debug!(
@@ -274,11 +307,18 @@ pub struct BatchedMember {
 /// Chunks the input into sub-calls of at most `chunk_size` groups each and
 /// aggregates results. Per-group errors are logged at WARN and the group is
 /// omitted from the returned Vec.
+///
+/// When `parse_assignments = false`, each returned `BatchedMember` has an
+/// empty `assignments: Vec<TopicPartition>`. This skips a per-member
+/// iteration over the assignment's `rd_kafka_topic_partition_list_t` — the
+/// data is only consumed by per-partition metrics (granularity = "partition"),
+/// so it's pure wasted work at the default topic granularity.
 pub fn describe_consumer_groups_batched(
     admin: &AdminClient<DefaultClientContext>,
     group_ids: &[&str],
     timeout: Duration,
     chunk_size: usize,
+    parse_assignments: bool,
 ) -> Result<Vec<BatchedGroupDescription>> {
     if group_ids.is_empty() {
         return Ok(Vec::new());
@@ -286,7 +326,8 @@ pub fn describe_consumer_groups_batched(
     let chunk_size = chunk_size.max(1);
     let mut out = Vec::with_capacity(group_ids.len());
     for chunk in group_ids.chunks(chunk_size) {
-        let mut part = describe_consumer_groups_one_chunk(admin, chunk, timeout)?;
+        let mut part =
+            describe_consumer_groups_one_chunk(admin, chunk, timeout, parse_assignments)?;
         out.append(&mut part);
     }
     Ok(out)
@@ -296,6 +337,7 @@ fn describe_consumer_groups_one_chunk(
     admin: &AdminClient<DefaultClientContext>,
     group_ids: &[&str],
     timeout: Duration,
+    parse_assignments: bool,
 ) -> Result<Vec<BatchedGroupDescription>> {
     let timeout_ms = timeout.as_millis().min(i32::MAX as u128) as i32;
     let rk = admin_native_ptr(admin);
@@ -436,19 +478,21 @@ fn describe_consumer_groups_one_chunk(
                 let client_id = ptr_to_string(rd_kafka_MemberDescription_client_id(member));
                 let client_host = ptr_to_string(rd_kafka_MemberDescription_host(member));
 
-                let assignment = rd_kafka_MemberDescription_assignment(member);
                 let mut assignments = Vec::new();
-                if !assignment.is_null() {
-                    let tpl_ptr = rd_kafka_MemberAssignment_partitions(assignment);
-                    if !tpl_ptr.is_null() {
-                        let tpl = &*tpl_ptr;
-                        for j in 0..tpl.cnt {
-                            let el = &*tpl.elems.add(j as usize);
-                            if el.topic.is_null() {
-                                continue;
+                if parse_assignments {
+                    let assignment = rd_kafka_MemberDescription_assignment(member);
+                    if !assignment.is_null() {
+                        let tpl_ptr = rd_kafka_MemberAssignment_partitions(assignment);
+                        if !tpl_ptr.is_null() {
+                            let tpl = &*tpl_ptr;
+                            for j in 0..tpl.cnt {
+                                let el = &*tpl.elems.add(j as usize);
+                                if el.topic.is_null() {
+                                    continue;
+                                }
+                                let topic = CStr::from_ptr(el.topic).to_string_lossy().to_string();
+                                assignments.push(TopicPartition::new(topic, el.partition));
                             }
-                            let topic = CStr::from_ptr(el.topic).to_string_lossy().to_string();
-                            assignments.push(TopicPartition::new(topic, el.partition));
                         }
                     }
                 }
@@ -719,5 +763,15 @@ mod tests {
         // RD_KAFKA_OFFSET_SPEC_EARLIEST == -2, _LATEST == -1 (from rdkafka.h).
         assert_eq!(OffsetSpec::Earliest.as_c_value(), -2);
         assert_eq!(OffsetSpec::Latest.as_c_value(), -1);
+    }
+
+    #[test]
+    fn topic_interner_returns_same_arc_for_same_name() {
+        let mut interner = TopicInterner::default();
+        let a = interner.intern("foo");
+        let b = interner.intern("foo");
+        assert!(Arc::ptr_eq(&a, &b), "same topic must share the Arc");
+        let c = interner.intern("bar");
+        assert!(!Arc::ptr_eq(&a, &c));
     }
 }

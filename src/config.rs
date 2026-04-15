@@ -70,6 +70,35 @@ pub struct PerformanceConfig {
     /// Set to 0 to disable. Default: 50 (~25 min at 30s poll interval).
     #[serde(default = "default_client_recycle_interval")]
     pub client_recycle_interval: u64,
+    /// Maximum size of the Tokio blocking-thread pool used for librdkafka FFI
+    /// calls. The default Tokio limit is 512; each thread holds a native
+    /// stack (2–8 MB depending on platform), so the worst-case virtual
+    /// memory footprint is significant on large clusters. 64 is ample for
+    /// this exporter: the hot path's concurrent blocking calls are bounded
+    /// by `max_concurrent_groups` + a few for watermark / compacted-topic /
+    /// timestamp-sampling FFI calls. Raise this if you set
+    /// `max_concurrent_groups` above ~50.
+    #[serde(default = "default_max_blocking_threads")]
+    pub max_blocking_threads: usize,
+    /// How long to cache each topic's `cleanup.policy` in memory.
+    /// `cleanup.policy` rarely changes after topic creation, so caching it
+    /// for a long time saves a per-cycle `DescribeConfigs` RPC over the
+    /// monitored topic set. Only topics new to the cache (or whose entry
+    /// has expired) get queried on a given cycle.
+    #[serde(
+        with = "humantime_serde",
+        default = "default_compacted_topics_cache_ttl"
+    )]
+    pub compacted_topics_cache_ttl: Duration,
+    /// How long to cache the derived "monitored partitions + monitored topics"
+    /// set from cluster metadata. A cycle with a fresh cache entry skips the
+    /// `fetch_metadata` call and the regex filtering pass over every topic
+    /// name — significant savings on clusters with thousands of topics.
+    /// New topics (or partition additions) become visible at most this long
+    /// after they appear on the cluster. Set to 0 to disable the cache
+    /// (refresh every cycle).
+    #[serde(with = "humantime_serde", default = "default_metadata_cache_ttl")]
+    pub metadata_cache_ttl: Duration,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -183,6 +212,18 @@ fn default_client_recycle_interval() -> u64 {
     50
 }
 
+fn default_max_blocking_threads() -> usize {
+    64
+}
+
+fn default_compacted_topics_cache_ttl() -> Duration {
+    Duration::from_secs(3600)
+}
+
+fn default_metadata_cache_ttl() -> Duration {
+    Duration::from_secs(300)
+}
+
 fn default_otel_endpoint() -> String {
     "http://localhost:4317".to_string()
 }
@@ -261,6 +302,9 @@ impl Default for PerformanceConfig {
             max_concurrent_groups: default_max_concurrent_groups(),
             max_concurrent_watermarks: default_max_concurrent_watermarks(),
             client_recycle_interval: default_client_recycle_interval(),
+            max_blocking_threads: default_max_blocking_threads(),
+            compacted_topics_cache_ttl: default_compacted_topics_cache_ttl(),
+            metadata_cache_ttl: default_metadata_cache_ttl(),
         }
     }
 }
@@ -321,6 +365,33 @@ impl Config {
             return Err(KlagError::Config(
                 "performance.max_concurrent_watermarks must be at least 1".to_string(),
             ));
+        }
+        // The blocking-thread pool must be able to hold every concurrent FFI
+        // call our hot path spawns simultaneously. `max_concurrent_groups`
+        // is the dominant consumer; the timestamp sampler adds up to
+        // `max_concurrent_fetches` more — but only when sampling is enabled.
+        // If the pool is too small, tasks queue behind each other and we
+        // effectively serialize — silently undoing the Tier 1 win.
+        let sampler_contribution = if self.exporter.timestamp_sampling.enabled {
+            self.exporter.timestamp_sampling.max_concurrent_fetches
+        } else {
+            0
+        };
+        let min_needed = self.exporter.performance.max_concurrent_groups + sampler_contribution + 4; // small headroom for watermark / compacted-topic / metadata FFI
+        if self.exporter.performance.max_blocking_threads < min_needed {
+            return Err(KlagError::Config(format!(
+                "performance.max_blocking_threads ({}) must be >= max_concurrent_groups ({}) + \
+                 timestamp_sampling.max_concurrent_fetches ({}, sampling {}) + 4 = {}",
+                self.exporter.performance.max_blocking_threads,
+                self.exporter.performance.max_concurrent_groups,
+                sampler_contribution,
+                if self.exporter.timestamp_sampling.enabled {
+                    "enabled"
+                } else {
+                    "disabled"
+                },
+                min_needed,
+            )));
         }
 
         Ok(())
@@ -584,6 +655,15 @@ bootstrap_servers = "localhost:9092"
         assert_eq!(config.exporter.performance.max_concurrent_groups, 10);
         assert_eq!(config.exporter.performance.max_concurrent_watermarks, 50);
         assert_eq!(config.exporter.performance.client_recycle_interval, 50);
+        assert_eq!(config.exporter.performance.max_blocking_threads, 64);
+        assert_eq!(
+            config.exporter.performance.compacted_topics_cache_ttl,
+            Duration::from_secs(3600)
+        );
+        assert_eq!(
+            config.exporter.performance.metadata_cache_ttl,
+            Duration::from_secs(300)
+        );
     }
 
     #[test]
@@ -619,6 +699,82 @@ bootstrap_servers = "localhost:9092"
         assert_eq!(config.exporter.performance.max_concurrent_groups, 20);
         assert_eq!(config.exporter.performance.max_concurrent_watermarks, 100);
         assert_eq!(config.exporter.performance.client_recycle_interval, 0);
+    }
+
+    #[test]
+    fn test_max_blocking_threads_rejected_when_too_small() {
+        // default max_concurrent_groups=10, max_concurrent_fetches=5,
+        // so minimum blocking threads = 10 + 5 + 4 = 19. 16 must fail.
+        let config_content = r#"
+[exporter]
+
+[exporter.performance]
+max_blocking_threads = 16
+
+[[clusters]]
+name = "test"
+bootstrap_servers = "localhost:9092"
+"#;
+        let mut file = NamedTempFile::new().unwrap();
+        file.write_all(config_content.as_bytes()).unwrap();
+
+        let err = Config::load(Some(file.path().to_str().unwrap())).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("max_blocking_threads (16)"),
+            "unexpected error: {msg}"
+        );
+        assert!(msg.contains("= 19"), "unexpected error: {msg}");
+    }
+
+    #[test]
+    fn test_max_blocking_threads_sampler_excluded_when_disabled() {
+        // Sampling disabled → sampler_contribution = 0. Required min becomes
+        // max_concurrent_groups (10 default) + 4 = 14. 16 must be accepted
+        // (would have been rejected with the old validation that always
+        // counted max_concurrent_fetches = 5).
+        let config_content = r#"
+[exporter]
+
+[exporter.timestamp_sampling]
+enabled = false
+
+[exporter.performance]
+max_blocking_threads = 16
+
+[[clusters]]
+name = "test"
+bootstrap_servers = "localhost:9092"
+"#;
+        let mut file = NamedTempFile::new().unwrap();
+        file.write_all(config_content.as_bytes()).unwrap();
+
+        let config = Config::load(Some(file.path().to_str().unwrap()))
+            .expect("should accept 16 when sampling is disabled");
+        assert_eq!(config.exporter.performance.max_blocking_threads, 16);
+    }
+
+    #[test]
+    fn test_max_blocking_threads_custom_value_accepted() {
+        let config_content = r#"
+[exporter]
+
+[exporter.performance]
+max_concurrent_groups = 30
+max_blocking_threads = 128
+
+[exporter.timestamp_sampling]
+max_concurrent_fetches = 20
+
+[[clusters]]
+name = "test"
+bootstrap_servers = "localhost:9092"
+"#;
+        let mut file = NamedTempFile::new().unwrap();
+        file.write_all(config_content.as_bytes()).unwrap();
+
+        let config = Config::load(Some(file.path().to_str().unwrap())).unwrap();
+        assert_eq!(config.exporter.performance.max_blocking_threads, 128);
     }
 
     #[test]

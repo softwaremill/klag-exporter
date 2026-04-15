@@ -45,8 +45,12 @@ impl ClusterManager {
         let performance = exporter_config.performance.clone();
 
         let client = Arc::new(KafkaClient::with_performance(&config, performance.clone())?);
-        let offset_collector =
-            OffsetCollector::with_performance(Arc::clone(&client), filters, performance.clone());
+        let offset_collector = OffsetCollector::with_performance(
+            Arc::clone(&client),
+            filters,
+            performance.clone(),
+            exporter_config.granularity,
+        );
 
         let timestamp_sampler = if exporter_config.timestamp_sampling.enabled {
             let ts_consumer = TimestampConsumer::with_pool_size(
@@ -387,7 +391,7 @@ impl ClusterManager {
                 Ok(Ok(((group_id, tp), Ok(None)))) => {
                     debug!(
                         group = group_id,
-                        topic = tp.topic,
+                        topic = %tp.topic,
                         partition = tp.partition,
                         "No timestamp available"
                     );
@@ -395,7 +399,7 @@ impl ClusterManager {
                 Ok(Ok(((group_id, tp), Err(e)))) => {
                     warn!(
                         group = group_id,
-                        topic = tp.topic,
+                        topic = %tp.topic,
                         partition = tp.partition,
                         error = %e,
                         "Failed to fetch timestamp"
