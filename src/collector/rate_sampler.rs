@@ -75,7 +75,10 @@ impl RateSampler {
                     break;
                 }
             }
-            buf.push_back(WatermarkSample { at: now, hwm: *high });
+            buf.push_back(WatermarkSample {
+                at: now,
+                hwm: *high,
+            });
             while buf.len() > self.max_samples {
                 buf.pop_front();
             }
@@ -110,10 +113,7 @@ impl RateSampler {
     /// Current number of partitions with history entries. Used for
     /// diagnostics / metrics.
     pub fn tracked_partitions(&self) -> usize {
-        self.history
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .len()
+        self.history.lock().unwrap_or_else(|p| p.into_inner()).len()
     }
 
     /// Drop all history. Used when a cluster-wide reset is needed (e.g.
@@ -167,10 +167,7 @@ mod tests {
             .expect("should compute rate");
         // Expected: 500 msgs / 10,000 msgs/sec = 0.05s. Allow generous
         // tolerance for CI jitter in the 100ms sleep.
-        assert!(
-            (0.02..0.2).contains(&est),
-            "est out of sanity range: {est}"
-        );
+        assert!((0.02..0.2).contains(&est), "est out of sanity range: {est}");
     }
 
     #[test]

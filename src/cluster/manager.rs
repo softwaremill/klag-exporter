@@ -1,17 +1,16 @@
-use crate::collector::lag_calculator::{LagCalculator, TimestampData};
+use crate::collector::lag_calculator::LagCalculator;
 use crate::collector::offset_collector::OffsetCollector;
 use crate::collector::timestamp_sampler::TimestampSampler;
 use crate::config::{ClusterConfig, ExporterConfig, Granularity};
 use crate::error::Result;
-use crate::kafka::client::{KafkaClient, TopicPartition};
+use crate::kafka::client::KafkaClient;
 use crate::kafka::TimestampConsumer;
 use crate::leadership::LeadershipStatus;
 use crate::metrics::registry::MetricsRegistry;
-use futures::future::join_all;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::{broadcast, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::broadcast;
 use tracing::{debug, error, info, instrument, warn};
 
 /// Default timeout for a single collection cycle (should be less than poll_interval)
@@ -52,25 +51,37 @@ impl ClusterManager {
             exporter_config.granularity,
         );
 
-        let timestamp_sampler = if exporter_config.timestamp_sampling.enabled {
-            let ts_consumer = TimestampConsumer::with_pool_size(
-                &config,
-                exporter_config.timestamp_sampling.max_concurrent_fetches,
-            )?;
-            Some(TimestampSampler::new(
-                ts_consumer,
-                exporter_config.timestamp_sampling.cache_ttl,
-            ))
+        let ts_cfg = &exporter_config.timestamp_sampling;
+        let timestamp_sampler = if ts_cfg.enabled {
+            Some(match ts_cfg.mode {
+                crate::config::TimestampSamplingMode::Message => {
+                    // Only build the pool when actually using it. This is
+                    // the Tier-3 resident-memory saving for rate-mode users:
+                    // no BaseConsumer pool, no extra librdkafka clients.
+                    let ts_consumer =
+                        TimestampConsumer::with_pool_size(&config, ts_cfg.max_concurrent_fetches)?;
+                    TimestampSampler::new_message(ts_consumer, ts_cfg.cache_ttl)
+                }
+                crate::config::TimestampSamplingMode::Rate => {
+                    let rs = crate::collector::rate_sampler::RateSampler::new(
+                        ts_cfg.rate_history_samples,
+                        ts_cfg.rate_history_max_age,
+                        ts_cfg.rate_min_msgs_per_sec,
+                    );
+                    TimestampSampler::new_rate(rs)
+                }
+            })
         } else {
             None
         };
 
         info!(
             cluster = cluster_name,
-            timestamp_sampling = exporter_config.timestamp_sampling.enabled,
+            timestamp_sampling = ts_cfg.enabled,
+            timestamp_sampling_mode = ?ts_cfg.mode,
             poll_interval = ?exporter_config.poll_interval,
             granularity = ?exporter_config.granularity,
-            max_concurrent_fetches = exporter_config.timestamp_sampling.max_concurrent_fetches,
+            max_concurrent_fetches = ts_cfg.max_concurrent_fetches,
             custom_labels = ?cluster_labels,
             "Created cluster manager"
         );
@@ -268,18 +279,22 @@ impl ClusterManager {
             "Collected offsets"
         );
 
-        // Collect timestamps if enabled (with concurrency limit)
-        let timestamps = if let Some(ref sampler) = self.timestamp_sampler {
-            self.collect_timestamps_concurrent(sampler, &snapshot).await
-        } else {
-            HashMap::new()
-        };
-
-        // Calculate lag metrics
+        // Calculate lag metrics: compute "now" BEFORE time-lag computation
+        // because rate mode synthesizes timestamps relative to `now_ms`.
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_millis() as i64;
+
+        // Compute per-partition time lags via whichever sampler mode is
+        // configured (rate = no I/O, message = bounded concurrent FFI).
+        let timestamps = if let Some(ref sampler) = self.timestamp_sampler {
+            sampler
+                .compute_time_lags(&snapshot, now_ms, self.max_concurrent_fetches)
+                .await
+        } else {
+            HashMap::new()
+        };
 
         let poll_time_ms = start.elapsed().as_millis() as u64;
         let lag_metrics = LagCalculator::calculate(
@@ -310,111 +325,6 @@ impl ClusterManager {
         );
 
         Ok(())
-    }
-
-    async fn collect_timestamps_concurrent(
-        &self,
-        sampler: &TimestampSampler,
-        snapshot: &crate::collector::offset_collector::OffsetsSnapshot,
-    ) -> HashMap<(String, TopicPartition), TimestampData> {
-        // Build list of requests for partitions with lag
-        let mut requests: Vec<(String, TopicPartition, i64)> = Vec::new();
-
-        for group in &snapshot.groups {
-            for (tp, committed_offset) in &group.offsets {
-                let high_watermark = snapshot.get_high_watermark(tp).unwrap_or(*committed_offset);
-                let lag = high_watermark - committed_offset;
-
-                if lag > 0 {
-                    requests.push((group.group_id.clone(), tp.clone(), *committed_offset));
-                }
-            }
-        }
-
-        if requests.is_empty() {
-            return HashMap::new();
-        }
-
-        debug!(
-            cluster = %self.cluster_name,
-            request_count = requests.len(),
-            max_concurrent = self.max_concurrent_fetches,
-            "Fetching timestamps in parallel"
-        );
-
-        // Use semaphore to limit concurrency
-        let semaphore = Arc::new(Semaphore::new(self.max_concurrent_fetches));
-        let mut handles = Vec::with_capacity(requests.len());
-
-        // Spawn tasks with proper semaphore-based backpressure
-        for (group_id, tp, offset) in requests {
-            let semaphore_clone = semaphore.clone();
-            let sampler_clone = sampler.clone();
-
-            // Spawn an async task that properly acquires the semaphore before spawning blocking work
-            let handle = tokio::spawn(async move {
-                // Acquire permit - this properly awaits until one is available
-                let permit: OwnedSemaphorePermit = semaphore_clone
-                    .acquire_owned()
-                    .await
-                    .expect("semaphore closed");
-
-                // Now spawn the blocking task with the permit held
-                let result = tokio::task::spawn_blocking(move || {
-                    let _permit = permit; // Hold permit until blocking work completes
-                    let result = sampler_clone.get_timestamp(&group_id, &tp, offset);
-                    ((group_id, tp), result)
-                })
-                .await;
-
-                result
-            });
-
-            handles.push(handle);
-        }
-
-        // Wait for all tasks to complete in parallel
-        let results = join_all(handles).await;
-
-        // Collect results (nested Result from tokio::spawn -> spawn_blocking)
-        let mut timestamps = HashMap::new();
-        for result in results {
-            match result {
-                Ok(Ok(((group_id, tp), Ok(Some(ts_result))))) => {
-                    timestamps.insert(
-                        (group_id, tp),
-                        TimestampData {
-                            timestamp_ms: ts_result.timestamp_ms,
-                        },
-                    );
-                }
-                Ok(Ok(((group_id, tp), Ok(None)))) => {
-                    debug!(
-                        group = group_id,
-                        topic = %tp.topic,
-                        partition = tp.partition,
-                        "No timestamp available"
-                    );
-                }
-                Ok(Ok(((group_id, tp), Err(e)))) => {
-                    warn!(
-                        group = group_id,
-                        topic = %tp.topic,
-                        partition = tp.partition,
-                        error = %e,
-                        "Failed to fetch timestamp"
-                    );
-                }
-                Ok(Err(e)) => {
-                    warn!(error = %e, "Timestamp fetch blocking task panicked");
-                }
-                Err(e) => {
-                    warn!(error = %e, "Timestamp fetch task panicked");
-                }
-            }
-        }
-
-        timestamps
     }
 }
 
