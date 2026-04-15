@@ -338,6 +338,7 @@ mod tests {
                 offsets,
             }],
             watermarks,
+            compacted_topics: HashSet::new(),
             timestamp_ms: 1000000,
         }
     }
@@ -420,6 +421,7 @@ mod tests {
                 offsets,
             }],
             watermarks,
+            compacted_topics: HashSet::new(),
             timestamp_ms: 0,
         };
 

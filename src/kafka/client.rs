@@ -679,16 +679,16 @@ impl KafkaClient {
         AdminOptions::new().request_timeout(Some(self.timeout))
     }
 
-    /// Fetch topics that have compaction enabled (cleanup.policy contains "compact")
-    #[instrument(skip(self), fields(cluster = %self.config.name))]
-    pub async fn fetch_compacted_topics(&self) -> Result<HashSet<String>> {
-        let metadata = self.fetch_metadata()?;
-        let topic_names: Vec<String> = metadata
-            .topics()
-            .iter()
-            .map(|t| t.name().to_string())
-            .collect();
-
+    /// Fetch topics that have compaction enabled (cleanup.policy contains
+    /// "compact"), restricted to the supplied topic name list. Callers pass
+    /// the already-filtered monitored topic set to avoid paying the
+    /// full-cluster `DescribeConfigs` cost on clusters with thousands of
+    /// topics.
+    #[instrument(skip(self, topic_names), fields(cluster = %self.config.name, count = topic_names.len()))]
+    pub async fn fetch_compacted_topics_for(
+        &self,
+        topic_names: &[String],
+    ) -> Result<HashSet<String>> {
         if topic_names.is_empty() {
             return Ok(HashSet::new());
         }
@@ -710,16 +710,14 @@ impl KafkaClient {
         for result in results {
             match result {
                 Ok(resource) => {
-                    // Extract topic name from OwnedResourceSpecifier
                     let topic_name = match &resource.specifier {
                         rdkafka::admin::OwnedResourceSpecifier::Topic(name) => name.clone(),
-                        _ => continue, // Skip non-topic resources
+                        _ => continue,
                     };
                     for entry in resource.entries {
                         if entry.name == "cleanup.policy" {
                             if let Some(value) = entry.value {
                                 if value.contains("compact") {
-                                    debug!(topic = %topic_name, cleanup_policy = %value, "Topic has compaction enabled");
                                     compacted_topics.insert(topic_name.clone());
                                 }
                             }
@@ -727,17 +725,13 @@ impl KafkaClient {
                     }
                 }
                 Err(err) => {
-                    warn!(
-                        error = %err,
-                        "Failed to describe config for resource"
-                    );
+                    warn!(error = %err, "Failed to describe config for resource");
                 }
             }
         }
 
         debug!(
             count = compacted_topics.len(),
-            topics = ?compacted_topics,
             "Identified compacted topics"
         );
 

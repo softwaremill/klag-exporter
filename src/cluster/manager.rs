@@ -253,37 +253,17 @@ impl ClusterManager {
     async fn collect_once(&self) -> Result<()> {
         let start = Instant::now();
 
-        // Collect offsets using parallel method for better performance with large clusters
+        // Collect offsets, watermarks, and compacted-topic set in one batched pass.
         let snapshot = self.offset_collector.collect_parallel().await?;
+        let compacted_topics = snapshot.compacted_topics.clone();
 
         debug!(
             cluster = %self.cluster_name,
             groups = snapshot.groups.len(),
             partitions = snapshot.watermarks.len(),
+            compacted_topics = compacted_topics.len(),
             "Collected offsets"
         );
-
-        // Fetch compacted topics (topics with cleanup.policy=compact)
-        let compacted_topics = match self.client.fetch_compacted_topics().await {
-            Ok(topics) => {
-                if !topics.is_empty() {
-                    debug!(
-                        cluster = %self.cluster_name,
-                        compacted_topics = ?topics,
-                        "Identified compacted topics"
-                    );
-                }
-                topics
-            }
-            Err(e) => {
-                warn!(
-                    cluster = %self.cluster_name,
-                    error = %e,
-                    "Failed to fetch topic configs, assuming no compacted topics"
-                );
-                HashSet::new()
-            }
-        };
 
         // Collect timestamps if enabled (with concurrency limit)
         let timestamps = if let Some(ref sampler) = self.timestamp_sampler {
