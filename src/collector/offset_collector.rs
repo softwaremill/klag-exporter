@@ -1,6 +1,6 @@
 use crate::config::{CompiledFilters, Granularity, PerformanceConfig};
 use crate::error::Result;
-use crate::kafka::client::{KafkaClient, TopicPartition};
+use crate::kafka::client::{ConsumerGroupInfo, KafkaClient, TopicPartition};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -118,6 +118,47 @@ impl MetadataCache {
     }
 }
 
+/// TTL cache for the output of `list_consumer_groups`. The cluster's
+/// consumer-group roster is stable outside of deployments / scaling events,
+/// so re-fetching it every poll cycle is wasted work. Same shape as
+/// `MetadataCache`: one entry for the whole list, Arc-wrapped so cache
+/// hits don't deep-clone the Vec.
+struct ConsumerGroupsCache {
+    ttl: Duration,
+    entry: Mutex<Option<(Arc<Vec<ConsumerGroupInfo>>, Instant)>>,
+}
+
+impl ConsumerGroupsCache {
+    fn new(ttl: Duration) -> Self {
+        Self {
+            ttl,
+            entry: Mutex::new(None),
+        }
+    }
+
+    fn get(&self) -> Option<Arc<Vec<ConsumerGroupInfo>>> {
+        if self.ttl.is_zero() {
+            return None;
+        }
+        let guard = self.entry.lock().unwrap_or_else(|p| p.into_inner());
+        let (groups, at) = guard.as_ref()?;
+        if at.elapsed() < self.ttl {
+            Some(Arc::clone(groups))
+        } else {
+            None
+        }
+    }
+
+    fn set(&self, groups: Vec<ConsumerGroupInfo>) -> Arc<Vec<ConsumerGroupInfo>> {
+        let arc = Arc::new(groups);
+        if !self.ttl.is_zero() {
+            let mut guard = self.entry.lock().unwrap_or_else(|p| p.into_inner());
+            *guard = Some((Arc::clone(&arc), Instant::now()));
+        }
+        arc
+    }
+}
+
 pub struct OffsetCollector {
     client: Arc<KafkaClient>,
     filters: CompiledFilters,
@@ -125,6 +166,7 @@ pub struct OffsetCollector {
     granularity: Granularity,
     compacted_cache: CompactedTopicsCache,
     metadata_cache: MetadataCache,
+    consumer_groups_cache: ConsumerGroupsCache,
 }
 
 #[derive(Debug, Clone)]
@@ -166,6 +208,7 @@ impl OffsetCollector {
     ) -> Self {
         let compacted_cache = CompactedTopicsCache::new(performance.compacted_topics_cache_ttl);
         let metadata_cache = MetadataCache::new(performance.metadata_cache_ttl);
+        let consumer_groups_cache = ConsumerGroupsCache::new(performance.consumer_groups_cache_ttl);
         Self {
             client,
             filters,
@@ -173,6 +216,7 @@ impl OffsetCollector {
             granularity,
             compacted_cache,
             metadata_cache,
+            consumer_groups_cache,
         }
     }
 
@@ -195,11 +239,19 @@ impl OffsetCollector {
         let start = std::time::Instant::now();
 
         // List all consumer groups (single metadata call).
-        let all_groups = self.client.list_consumer_groups()?;
-        debug!(
-            total_groups = all_groups.len(),
-            "Listed all consumer groups"
-        );
+        // TTL-cached: steady-state (stable group roster) cycles skip this
+        // RPC entirely. New groups appear within one TTL of creation.
+        let all_groups = if let Some(cached) = self.consumer_groups_cache.get() {
+            debug!(total_groups = cached.len(), "Consumer groups cache hit");
+            cached
+        } else {
+            let fresh = self.client.list_consumer_groups()?;
+            debug!(
+                total_groups = fresh.len(),
+                "Listed all consumer groups (fresh)"
+            );
+            self.consumer_groups_cache.set(fresh)
+        };
 
         let filtered_groups: Vec<_> = all_groups
             .iter()
@@ -607,6 +659,40 @@ mod tests {
         assert!(cache.get().is_some());
         std::thread::sleep(Duration::from_millis(70));
         assert!(cache.get().is_none(), "expired entry must miss");
+    }
+
+    #[test]
+    fn consumer_groups_cache_hit_returns_cached() {
+        let cache = ConsumerGroupsCache::new(Duration::from_secs(60));
+        assert!(cache.get().is_none(), "empty cache should miss");
+        let arc = cache.set(vec![ConsumerGroupInfo {
+            group_id: "g".into(),
+            protocol_type: String::new(),
+            state: String::new(),
+        }]);
+        assert_eq!(arc.len(), 1);
+        let cached = cache.get().expect("should hit after set");
+        assert_eq!(cached.len(), 1);
+    }
+
+    #[test]
+    fn consumer_groups_cache_zero_ttl_disabled() {
+        let cache = ConsumerGroupsCache::new(Duration::ZERO);
+        let _arc = cache.set(vec![ConsumerGroupInfo {
+            group_id: "g".into(),
+            protocol_type: String::new(),
+            state: String::new(),
+        }]);
+        assert!(cache.get().is_none());
+    }
+
+    #[test]
+    fn consumer_groups_cache_expires() {
+        let cache = ConsumerGroupsCache::new(Duration::from_millis(50));
+        cache.set(vec![]);
+        assert!(cache.get().is_some());
+        std::thread::sleep(Duration::from_millis(70));
+        assert!(cache.get().is_none());
     }
 
     #[test]
