@@ -131,10 +131,8 @@ pub fn list_offsets_batched(
             (*elem).offset = spec_value;
         }
 
-        let options = rd_kafka_AdminOptions_new(
-            rk,
-            rd_kafka_admin_op_t::RD_KAFKA_ADMIN_OP_LISTOFFSETS,
-        );
+        let options =
+            rd_kafka_AdminOptions_new(rk, rd_kafka_admin_op_t::RD_KAFKA_ADMIN_OP_LISTOFFSETS);
         if options.is_null() {
             return Err(KlagError::Admin(
                 "Failed to create AdminOptions (ListOffsets)".into(),
@@ -370,9 +368,7 @@ fn describe_consumer_groups_one_chunk(
 
         let event = rd_kafka_queue_poll(queue, timeout_ms);
         if event.is_null() {
-            return Err(KlagError::Admin(
-                "DescribeConsumerGroups timed out".into(),
-            ));
+            return Err(KlagError::Admin("DescribeConsumerGroups timed out".into()));
         }
         cleanup.event = event;
 
@@ -648,8 +644,7 @@ fn list_consumer_group_offsets_one_chunk(
         }
 
         let mut n_groups: usize = 0;
-        let groups_ptr =
-            rd_kafka_ListConsumerGroupOffsets_result_groups(result, &mut n_groups);
+        let groups_ptr = rd_kafka_ListConsumerGroupOffsets_result_groups(result, &mut n_groups);
         let mut out: HashMap<String, HashMap<TopicPartition, i64>> =
             HashMap::with_capacity(n_groups);
         if groups_ptr.is_null() || n_groups == 0 {
@@ -683,10 +678,7 @@ fn list_consumer_group_offsets_one_chunk(
                         // offset == RD_KAFKA_OFFSET_INVALID (-1001) means no committed offset.
                         if elem.offset >= 0 && !elem.topic.is_null() {
                             let topic = CStr::from_ptr(elem.topic).to_string_lossy().to_string();
-                            offsets.insert(
-                                TopicPartition::new(topic, elem.partition),
-                                elem.offset,
-                            );
+                            offsets.insert(TopicPartition::new(topic, elem.partition), elem.offset);
                         }
                     }
                 }

@@ -8,7 +8,7 @@ use crate::kafka::TimestampConsumer;
 use crate::leadership::LeadershipStatus;
 use crate::metrics::registry::MetricsRegistry;
 use futures::future::join_all;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{broadcast, OwnedSemaphorePermit, Semaphore};
