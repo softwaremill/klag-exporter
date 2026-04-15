@@ -169,6 +169,19 @@ pub struct OffsetCollector {
     consumer_groups_cache: ConsumerGroupsCache,
 }
 
+/// Per-phase wall-clock timings collected during one `collect_parallel`
+/// run. Emitted as a single structured debug log at the end of the cycle
+/// so operators can see where time goes without enabling trace logging.
+#[derive(Default)]
+struct PhaseTimings {
+    list_groups_ms: u64,
+    describe_groups_ms: u64,
+    metadata_ms: u64,
+    watermarks_ms: u64,
+    group_offsets_ms: u64,
+    compacted_ms: u64,
+}
+
 #[derive(Debug, Clone)]
 pub struct OffsetsSnapshot {
     pub cluster_name: String,
@@ -238,9 +251,16 @@ impl OffsetCollector {
     pub async fn collect_parallel(&self) -> Result<OffsetsSnapshot> {
         let start = std::time::Instant::now();
 
+        // Per-phase timings, emitted as a single structured log line at
+        // the end of the cycle. Lets operators see where wall-clock time
+        // goes (list_groups vs describe vs watermarks vs offsets vs
+        // compacted-configs) without turning on trace-level logging.
+        let mut timings = PhaseTimings::default();
+
         // List all consumer groups (single metadata call).
         // TTL-cached: steady-state (stable group roster) cycles skip this
         // RPC entirely. New groups appear within one TTL of creation.
+        let phase_start = std::time::Instant::now();
         let all_groups = if let Some(cached) = self.consumer_groups_cache.get() {
             debug!(total_groups = cached.len(), "Consumer groups cache hit");
             cached
@@ -252,6 +272,7 @@ impl OffsetCollector {
             );
             self.consumer_groups_cache.set(fresh)
         };
+        timings.list_groups_ms = phase_start.elapsed().as_millis() as u64;
 
         let filtered_groups: Vec<_> = all_groups
             .iter()
@@ -271,6 +292,7 @@ impl OffsetCollector {
         // parsing unless we actually emit per-partition member labels
         // (granularity = partition).
         let parse_assignments = matches!(self.granularity, Granularity::Partition);
+        let phase_start = std::time::Instant::now();
         let descriptions = self
             .client
             .describe_consumer_groups(
@@ -279,13 +301,16 @@ impl OffsetCollector {
                 self.performance.max_concurrent_groups,
             )
             .await?;
+        timings.describe_groups_ms = phase_start.elapsed().as_millis() as u64;
 
         // Compute the monitored partition + topic set once from a single
         // metadata fetch. Topic filter is applied here, BEFORE any
         // partition-touching operation — this keeps `__consumer_offsets`
         // (50 partitions by default) and blacklisted topics out of the hot
         // path entirely.
+        let phase_start = std::time::Instant::now();
         let (monitored_partitions, monitored_topics) = self.list_monitored_partitions()?;
+        timings.metadata_ms = phase_start.elapsed().as_millis() as u64;
         debug!(
             partitions = monitored_partitions.len(),
             topics = monitored_topics.len(),
@@ -296,6 +321,7 @@ impl OffsetCollector {
         // `monitored_partitions` into the blocking closure — no subsequent
         // use in this function, and cloning an O(partitions) Vec every cycle
         // is wasted work on large clusters.
+        let phase_start = std::time::Instant::now();
         let watermarks = {
             let client = Arc::clone(&self.client);
             tokio::task::spawn_blocking(move || {
@@ -306,6 +332,7 @@ impl OffsetCollector {
                 crate::error::KlagError::Admin(format!("watermark task panicked: {e}"))
             })??
         };
+        timings.watermarks_ms = phase_start.elapsed().as_millis() as u64;
         debug!(
             partitions = watermarks.len(),
             "Fetched watermarks (batched)"
@@ -314,11 +341,14 @@ impl OffsetCollector {
         // Group offsets via batched multi-group ListConsumerGroupOffsets.
         // `NULL` partitions → broker returns every committed partition per
         // group; we then filter the (much smaller) response by topic.
+        let phase_start = std::time::Instant::now();
         let group_offsets = self.fetch_all_group_offsets_batched(&group_ids).await;
+        timings.group_offsets_ms = phase_start.elapsed().as_millis() as u64;
 
         // Compacted-topic lookup — TTL-cached per topic. `cleanup.policy`
         // almost never changes after topic creation, so most cycles only
         // refresh new topics (or nothing at all in steady state).
+        let phase_start = std::time::Instant::now();
         let (mut compacted_topics, to_fetch) = self.compacted_cache.partition(&monitored_topics);
         if !to_fetch.is_empty() {
             debug!(
@@ -347,6 +377,7 @@ impl OffsetCollector {
         // Drop cache entries for topics no longer monitored (filter change,
         // topic deletion) so memory doesn't grow unboundedly.
         self.compacted_cache.prune_to(&monitored_topics);
+        timings.compacted_ms = phase_start.elapsed().as_millis() as u64;
 
         // Build group snapshots
         let mut groups = Vec::with_capacity(descriptions.len());
@@ -383,6 +414,12 @@ impl OffsetCollector {
         let elapsed = start.elapsed();
         debug!(
             elapsed_ms = elapsed.as_millis(),
+            list_groups_ms = timings.list_groups_ms,
+            describe_groups_ms = timings.describe_groups_ms,
+            metadata_ms = timings.metadata_ms,
+            watermarks_ms = timings.watermarks_ms,
+            group_offsets_ms = timings.group_offsets_ms,
+            compacted_ms = timings.compacted_ms,
             monitored_topics = monitored_topics.len(),
             compacted_topics = compacted_topics.len(),
             "Batched collection completed"
