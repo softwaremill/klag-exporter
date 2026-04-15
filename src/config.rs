@@ -102,7 +102,12 @@ pub struct PerformanceConfig {
     /// Maximum number of consumer groups to fetch offsets for in parallel
     #[serde(default = "default_max_concurrent_groups")]
     pub max_concurrent_groups: usize,
-    /// Maximum number of partitions to fetch watermarks for in parallel
+    /// **Deprecated** since the batched Admin API replaced the per-partition
+    /// watermark fan-out: watermarks are now fetched in two batched
+    /// `ListOffsets` calls regardless of partition count, so a per-partition
+    /// concurrency cap has no effect. Kept in the schema so existing configs
+    /// continue to parse; emits a one-time startup INFO if set to a
+    /// non-default value. Will be removed in a future release.
     #[serde(default = "default_max_concurrent_watermarks")]
     pub max_concurrent_watermarks: usize,
     /// Number of collection cycles between Kafka client recycling.
