@@ -221,7 +221,12 @@ impl OffsetCollector {
         let parse_assignments = matches!(self.granularity, Granularity::Partition);
         let descriptions = self
             .client
-            .describe_consumer_groups(&group_ids, parse_assignments)?;
+            .describe_consumer_groups(
+                &group_ids,
+                parse_assignments,
+                self.performance.max_concurrent_groups,
+            )
+            .await?;
 
         // Compute the monitored partition + topic set once from a single
         // metadata fetch. Topic filter is applied here, BEFORE any

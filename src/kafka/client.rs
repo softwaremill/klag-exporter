@@ -198,32 +198,36 @@ impl KafkaClient {
         Ok(groups)
     }
 
-    /// Describe consumer groups via batched `rd_kafka_DescribeConsumerGroups`.
-    /// Replaces the prior sequential `fetch_group_list(Some(group_id))` loop
-    /// which dominated collection time on large clusters (O(groups) serial
-    /// round trips). `protocol_type`/`protocol` fields are not populated — they
-    /// are not consumed downstream (marked `#[allow(dead_code)]`).
-    /// Describe consumer groups via batched FFI. Pass `parse_assignments =
-    /// false` to skip the per-member assignment-parsing step (saves
-    /// O(groups × members × partitions-per-member) work per cycle). The
-    /// data is only consumed by per-partition metrics, so the default
-    /// topic-granularity mode should pass `false`.
+    /// Describe consumer groups via batched FFI. Chunks are fanned out
+    /// concurrently (bounded by `max_concurrent_chunks`) instead of being
+    /// called serially — this was the largest remaining synchronous delay
+    /// in the hot path after Tier 1.
+    ///
+    /// Pass `parse_assignments = false` to skip the per-member
+    /// assignment-parsing step (saves O(groups × members ×
+    /// partitions-per-member) work per cycle). The data is only consumed
+    /// by per-partition metrics, so the default topic-granularity mode
+    /// should pass `false`. `protocol_type`/`protocol` fields are not
+    /// populated — they are not consumed downstream.
     #[instrument(skip(self, group_ids), fields(cluster = %self.config.name, count = group_ids.len()))]
-    pub fn describe_consumer_groups(
+    pub async fn describe_consumer_groups(
         &self,
         group_ids: &[&str],
         parse_assignments: bool,
+        max_concurrent_chunks: usize,
     ) -> Result<Vec<GroupDescription>> {
         use crate::kafka::admin::describe_consumer_groups_batched;
 
         let admin = self.admin();
         let batched = describe_consumer_groups_batched(
-            &admin,
+            admin,
             group_ids,
             self.timeout,
             100,
             parse_assignments,
-        )?;
+            max_concurrent_chunks,
+        )
+        .await?;
 
         Ok(batched
             .into_iter()
