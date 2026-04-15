@@ -253,7 +253,23 @@ impl KafkaClient {
 
         let mut merged = HashMap::with_capacity(partitions.len());
         for (tp, high) in highs {
-            let low = lows.get(&tp).copied().unwrap_or(0);
+            // If the EARLIEST call failed for this partition, fall back to
+            // `high` as the low watermark. This is conservative: it avoids
+            // a spurious data-loss alarm from the lag calculator (which
+            // flags `committed_offset < low_watermark`) while still surfacing
+            // valid lag numbers. A 0 default would misrepresent the earliest
+            // retained offset on compacted or retention-trimmed topics.
+            let low = match lows.get(&tp).copied() {
+                Some(l) => l,
+                None => {
+                    warn!(
+                        topic = %tp.topic,
+                        partition = tp.partition,
+                        "EARLIEST watermark missing; using LATEST as conservative fallback"
+                    );
+                    high
+                }
+            };
             merged.insert(tp, (low, high));
         }
         // Surface partitions where only EARLIEST returned (rare — usually both

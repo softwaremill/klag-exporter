@@ -255,13 +255,12 @@ impl ClusterManager {
 
         // Collect offsets, watermarks, and compacted-topic set in one batched pass.
         let snapshot = self.offset_collector.collect_parallel().await?;
-        let compacted_topics = snapshot.compacted_topics.clone();
 
         debug!(
             cluster = %self.cluster_name,
             groups = snapshot.groups.len(),
             partitions = snapshot.watermarks.len(),
-            compacted_topics = compacted_topics.len(),
+            compacted_topics = snapshot.compacted_topics.len(),
             "Collected offsets"
         );
 
@@ -284,7 +283,7 @@ impl ClusterManager {
             &timestamps,
             now_ms,
             poll_time_ms,
-            &compacted_topics,
+            &snapshot.compacted_topics,
         );
 
         // Update registry with granularity and custom labels

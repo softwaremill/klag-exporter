@@ -59,10 +59,16 @@ impl OffsetCollector {
     /// single filtered topic-set so internal / blacklisted topics never enter
     /// the watermark + compacted-topic-config path.
     ///
-    /// Per-cycle RPC count is O(brokers + groups/chunk_size) — two
-    /// batched ListOffsets calls (EARLIEST + LATEST) plus one batched
-    /// DescribeConsumerGroups plus `ceil(groups/100)` batched
-    /// ListConsumerGroupOffsets calls, regardless of topic/partition count.
+    /// Per-cycle RPC count:
+    ///   - 2 batched ListOffsets calls (EARLIEST + LATEST), routed per leader
+    ///     broker internally — O(brokers) broker round trips regardless of
+    ///     partition count.
+    ///   - `ceil(groups / 100)` batched DescribeConsumerGroups calls.
+    ///   - 1 ListConsumerGroupOffsets call per group (`PER_CALL_CHUNK = 1`
+    ///     in `fetch_all_group_offsets_batched` because librdkafka 2.12
+    ///     rejects multi-group calls at the client layer; fanned out via
+    ///     `max_concurrent_groups`).
+    ///   - 1 DescribeConfigs call restricted to monitored topics.
     #[instrument(skip(self), fields(cluster = %self.client.cluster_name()))]
     pub async fn collect_parallel(&self) -> Result<OffsetsSnapshot> {
         let start = std::time::Instant::now();
@@ -103,15 +109,19 @@ impl OffsetCollector {
             "Computed monitored topic + partition set"
         );
 
-        // Watermarks via batched ListOffsets (two blocking FFI calls).
+        // Watermarks via batched ListOffsets (two blocking FFI calls). Move
+        // `monitored_partitions` into the blocking closure — no subsequent
+        // use in this function, and cloning an O(partitions) Vec every cycle
+        // is wasted work on large clusters.
         let watermarks = {
             let client = Arc::clone(&self.client);
-            let parts = monitored_partitions.clone();
-            tokio::task::spawn_blocking(move || client.fetch_watermarks_for_partitions(&parts))
-                .await
-                .map_err(|e| {
-                    crate::error::KlagError::Admin(format!("watermark task panicked: {e}"))
-                })??
+            tokio::task::spawn_blocking(move || {
+                client.fetch_watermarks_for_partitions(&monitored_partitions)
+            })
+            .await
+            .map_err(|e| {
+                crate::error::KlagError::Admin(format!("watermark task panicked: {e}"))
+            })??
         };
         debug!(
             partitions = watermarks.len(),
@@ -252,15 +262,21 @@ impl OffsetCollector {
             handles.push(tokio::spawn(async move {
                 let _permit: OwnedSemaphorePermit =
                     permit.acquire_owned().await.expect("semaphore closed");
-                tokio::task::spawn_blocking(move || {
-                    list_consumer_group_offsets_batched(
-                        &client_clone.admin_handle(),
-                        &[gid.as_str()],
-                        offset_timeout,
-                        PER_CALL_CHUNK,
-                    )
+                // Return the group id alongside the result so failure logs
+                // can report which group broke.
+                let result = tokio::task::spawn_blocking({
+                    let gid = gid.clone();
+                    move || {
+                        list_consumer_group_offsets_batched(
+                            &client_clone.admin_handle(),
+                            &[gid.as_str()],
+                            offset_timeout,
+                            PER_CALL_CHUNK,
+                        )
+                    }
                 })
-                .await
+                .await;
+                (gid, result)
             }));
         }
 
@@ -269,9 +285,13 @@ impl OffsetCollector {
         let mut merged: HashMap<String, HashMap<TopicPartition, i64>> = HashMap::new();
         for r in results {
             match r {
-                Ok(Ok(Ok(map))) => merged.extend(map),
-                Ok(Ok(Err(e))) => warn!(error = %e, "Group-offset call failed"),
-                Ok(Err(e)) => warn!(error = %e, "Group-offset call task panicked"),
+                Ok((_gid, Ok(Ok(map)))) => merged.extend(map),
+                Ok((gid, Ok(Err(e)))) => {
+                    warn!(group = %gid, error = %e, "Group-offset call failed")
+                }
+                Ok((gid, Err(e))) => {
+                    warn!(group = %gid, error = %e, "Group-offset call task panicked")
+                }
                 Err(e) => warn!(error = %e, "Group-offset join error"),
             }
         }

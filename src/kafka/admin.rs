@@ -2,10 +2,13 @@
 //!
 //! These wrappers provide per-cycle bulk operations that replace per-partition
 //! / per-group call fan-outs. All `unsafe` blocks are isolated to this module
-//! and every C object allocated is released via an RAII guard on any exit path.
+//! and every C object allocated is released via an RAII guard on any exit
+//! path (panic-safe).
 //!
-//! The pattern mirrors the existing single-group `list_consumer_group_offsets`
-//! wrapper that currently lives in `kafka/client.rs`.
+//! The cleanup-guard pattern originated with the single-group
+//! `list_consumer_group_offsets` wrapper introduced in commit `9e46820` /
+//! PR #57 (FFI memory-leak fix). That single-group wrapper was replaced by
+//! the batched functions in this module; the pattern is preserved.
 
 use crate::error::{KlagError, Result};
 use crate::kafka::client::TopicPartition;
