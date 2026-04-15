@@ -70,12 +70,61 @@ impl CompactedTopicsCache {
     }
 }
 
+/// Shared handle to the filtered monitored-topic set. Arc-wrapped so cache
+/// hits are cheap pointer bumps rather than Vec clones.
+type MonitoredSet = (Arc<Vec<TopicPartition>>, Arc<Vec<String>>);
+
+/// Cached result of `list_monitored_partitions`. Re-fetching cluster metadata
+/// and re-running the topic filter is expensive on large clusters (thousands
+/// of topics), and the result is stable across many poll cycles. A fresh
+/// cache entry lets the collector skip both.
+struct MetadataCache {
+    ttl: Duration,
+    entry: Mutex<Option<(MonitoredSet, Instant)>>,
+}
+
+impl MetadataCache {
+    fn new(ttl: Duration) -> Self {
+        Self {
+            ttl,
+            entry: Mutex::new(None),
+        }
+    }
+
+    fn get(&self) -> Option<MonitoredSet> {
+        if self.ttl.is_zero() {
+            return None;
+        }
+        let guard = self.entry.lock().unwrap_or_else(|p| p.into_inner());
+        let (set, at) = guard.as_ref()?;
+        if at.elapsed() < self.ttl {
+            Some((Arc::clone(&set.0), Arc::clone(&set.1)))
+        } else {
+            None
+        }
+    }
+
+    /// Store fresh values and return Arc clones. When `ttl == 0` the cache
+    /// is treated as disabled: we don't store the entry (so subsequent
+    /// `get()` calls still return None) but we still wrap in Arcs for a
+    /// uniform return shape.
+    fn set(&self, partitions: Vec<TopicPartition>, topics: Vec<String>) -> MonitoredSet {
+        let set: MonitoredSet = (Arc::new(partitions), Arc::new(topics));
+        if !self.ttl.is_zero() {
+            let mut guard = self.entry.lock().unwrap_or_else(|p| p.into_inner());
+            *guard = Some(((Arc::clone(&set.0), Arc::clone(&set.1)), Instant::now()));
+        }
+        set
+    }
+}
+
 pub struct OffsetCollector {
     client: Arc<KafkaClient>,
     filters: CompiledFilters,
     performance: PerformanceConfig,
     granularity: Granularity,
     compacted_cache: CompactedTopicsCache,
+    metadata_cache: MetadataCache,
 }
 
 #[derive(Debug, Clone)]
@@ -116,12 +165,14 @@ impl OffsetCollector {
         granularity: Granularity,
     ) -> Self {
         let compacted_cache = CompactedTopicsCache::new(performance.compacted_topics_cache_ttl);
+        let metadata_cache = MetadataCache::new(performance.metadata_cache_ttl);
         Self {
             client,
             filters,
             performance,
             granularity,
             compacted_cache,
+            metadata_cache,
         }
     }
 
@@ -292,7 +343,17 @@ impl OffsetCollector {
     /// Compute the partition list this collector should monitor by applying
     /// the topic whitelist/blacklist to the current cluster metadata. Runs
     /// before any partition-touching Admin API call.
-    fn list_monitored_partitions(&self) -> Result<(Vec<TopicPartition>, Vec<String>)> {
+    ///
+    /// Result is TTL-cached; a cache hit returns the previously computed
+    /// (partitions, topics) pair via cheap Arc clones. This avoids both the
+    /// `fetch_metadata` round trip and the O(topics) regex-filter pass on
+    /// every cycle.
+    fn list_monitored_partitions(&self) -> Result<MonitoredSet> {
+        if let Some(cached) = self.metadata_cache.get() {
+            debug!("Metadata cache hit");
+            return Ok(cached);
+        }
+
         let metadata = self.client.fetch_metadata()?;
         let mut partitions = Vec::new();
         let mut topics = Vec::new();
@@ -306,7 +367,7 @@ impl OffsetCollector {
                 partitions.push(TopicPartition::new(name, p.id()));
             }
         }
-        Ok((partitions, topics))
+        Ok(self.metadata_cache.set(partitions, topics))
     }
 
     /// Fetch offsets for all groups via batched Admin API.
@@ -503,6 +564,39 @@ mod tests {
         let (cached, to_fetch) = cache.partition(&topics);
         assert!(cached.is_empty());
         assert_eq!(to_fetch, vec!["a"]);
+    }
+
+    #[test]
+    fn metadata_cache_hit_returns_cached() {
+        let cache = MetadataCache::new(Duration::from_secs(60));
+        assert!(cache.get().is_none(), "empty cache should miss");
+
+        let (parts, topics) = cache.set(vec![TopicPartition::new("t", 0)], vec!["t".to_string()]);
+        assert_eq!(parts.len(), 1);
+        assert_eq!(topics.len(), 1);
+
+        let cached = cache.get().expect("cache should be populated");
+        assert_eq!(cached.0.len(), 1);
+        assert_eq!(cached.1.len(), 1);
+    }
+
+    #[test]
+    fn metadata_cache_disabled_by_zero_ttl() {
+        let cache = MetadataCache::new(Duration::ZERO);
+        let (_parts, _topics) = cache.set(vec![TopicPartition::new("t", 0)], vec!["t".into()]);
+        assert!(
+            cache.get().is_none(),
+            "zero-TTL cache must never return a hit"
+        );
+    }
+
+    #[test]
+    fn metadata_cache_expires() {
+        let cache = MetadataCache::new(Duration::from_millis(50));
+        cache.set(vec![], vec![]);
+        assert!(cache.get().is_some());
+        std::thread::sleep(Duration::from_millis(70));
+        assert!(cache.get().is_none(), "expired entry must miss");
     }
 
     #[test]

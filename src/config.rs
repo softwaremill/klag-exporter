@@ -90,6 +90,15 @@ pub struct PerformanceConfig {
         default = "default_compacted_topics_cache_ttl"
     )]
     pub compacted_topics_cache_ttl: Duration,
+    /// How long to cache the derived "monitored partitions + monitored topics"
+    /// set from cluster metadata. A cycle with a fresh cache entry skips the
+    /// `fetch_metadata` call and the regex filtering pass over every topic
+    /// name — significant savings on clusters with thousands of topics.
+    /// New topics (or partition additions) become visible at most this long
+    /// after they appear on the cluster. Set to 0 to disable the cache
+    /// (refresh every cycle).
+    #[serde(with = "humantime_serde", default = "default_metadata_cache_ttl")]
+    pub metadata_cache_ttl: Duration,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -211,6 +220,10 @@ fn default_compacted_topics_cache_ttl() -> Duration {
     Duration::from_secs(3600)
 }
 
+fn default_metadata_cache_ttl() -> Duration {
+    Duration::from_secs(300)
+}
+
 fn default_otel_endpoint() -> String {
     "http://localhost:4317".to_string()
 }
@@ -291,6 +304,7 @@ impl Default for PerformanceConfig {
             client_recycle_interval: default_client_recycle_interval(),
             max_blocking_threads: default_max_blocking_threads(),
             compacted_topics_cache_ttl: default_compacted_topics_cache_ttl(),
+            metadata_cache_ttl: default_metadata_cache_ttl(),
         }
     }
 }
@@ -637,6 +651,10 @@ bootstrap_servers = "localhost:9092"
         assert_eq!(
             config.exporter.performance.compacted_topics_cache_ttl,
             Duration::from_secs(3600)
+        );
+        assert_eq!(
+            config.exporter.performance.metadata_cache_ttl,
+            Duration::from_secs(300)
         );
     }
 
