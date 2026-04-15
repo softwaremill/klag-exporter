@@ -427,6 +427,33 @@ impl Config {
                 "performance.max_concurrent_watermarks must be at least 1".to_string(),
             ));
         }
+
+        // Timestamp-sampling validation. Only enforce the constraints that
+        // actually matter for the configured mode so rate-mode users aren't
+        // forced to tune message-mode knobs (and vice versa).
+        let ts = &self.exporter.timestamp_sampling;
+        if ts.enabled && ts.mode == TimestampSamplingMode::Message && ts.max_concurrent_fetches == 0
+        {
+            return Err(KlagError::Config(
+                "timestamp_sampling.max_concurrent_fetches must be >= 1 when mode = 'message'"
+                    .to_string(),
+            ));
+        }
+        if ts.enabled && ts.mode == TimestampSamplingMode::Rate {
+            if ts.rate_history_samples < 2 {
+                return Err(KlagError::Config(
+                    "timestamp_sampling.rate_history_samples must be >= 2 (need two samples \
+                     to compute a rate)"
+                        .to_string(),
+                ));
+            }
+            if !ts.rate_min_msgs_per_sec.is_finite() || ts.rate_min_msgs_per_sec < 0.0 {
+                return Err(KlagError::Config(format!(
+                    "timestamp_sampling.rate_min_msgs_per_sec ({}) must be finite and >= 0",
+                    ts.rate_min_msgs_per_sec
+                )));
+            }
+        }
         // The blocking-thread pool must be able to hold every concurrent FFI
         // call our hot path spawns simultaneously. `max_concurrent_groups`
         // is the dominant consumer; the timestamp sampler adds up to
@@ -805,6 +832,73 @@ bootstrap_servers = "localhost:9092"
             "unexpected error: {msg}"
         );
         assert!(msg.contains("= 19"), "unexpected error: {msg}");
+    }
+
+    #[test]
+    fn test_message_mode_rejects_zero_concurrent_fetches() {
+        let config_content = r#"
+[exporter]
+
+[exporter.timestamp_sampling]
+mode = "message"
+max_concurrent_fetches = 0
+
+[[clusters]]
+name = "test"
+bootstrap_servers = "localhost:9092"
+"#;
+        let mut file = NamedTempFile::new().unwrap();
+        file.write_all(config_content.as_bytes()).unwrap();
+        let err = Config::load(Some(file.path().to_str().unwrap())).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("max_concurrent_fetches must be >= 1"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_rate_mode_rejects_one_history_sample() {
+        let config_content = r#"
+[exporter]
+
+[exporter.timestamp_sampling]
+rate_history_samples = 1
+
+[[clusters]]
+name = "test"
+bootstrap_servers = "localhost:9092"
+"#;
+        let mut file = NamedTempFile::new().unwrap();
+        file.write_all(config_content.as_bytes()).unwrap();
+        let err = Config::load(Some(file.path().to_str().unwrap())).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("rate_history_samples must be >= 2"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_rate_mode_rejects_negative_min_rate() {
+        let config_content = r#"
+[exporter]
+
+[exporter.timestamp_sampling]
+rate_min_msgs_per_sec = -1.0
+
+[[clusters]]
+name = "test"
+bootstrap_servers = "localhost:9092"
+"#;
+        let mut file = NamedTempFile::new().unwrap();
+        file.write_all(config_content.as_bytes()).unwrap();
+        let err = Config::load(Some(file.path().to_str().unwrap())).unwrap_err();
+        assert!(
+            err.to_string().contains("rate_min_msgs_per_sec")
+                && err.to_string().contains("must be finite and >= 0"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]

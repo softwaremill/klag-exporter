@@ -56,7 +56,7 @@ A high-performance Apache Kafka® consumer group lag exporter written in Rust. C
 
 klag-exporter supports two time-lag strategies, selectable via `timestamp_sampling.mode`:
 
-#### `rate` mode (default since v0.2)
+#### `rate` mode (default)
 
 - No consumer pool, no extra librdkafka clients — dramatically lower resident memory on large clusters
 - Keeps a short ring buffer of `(observation_time, high_watermark)` per partition
