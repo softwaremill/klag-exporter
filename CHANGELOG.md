@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.21](https://github.com/softwaremill/klag-exporter/compare/v0.1.20...v0.1.21) - 2026-04-15
+
+### Added
+
+- *(kafka)* add fetch_watermarks_for_partitions using batched ListOffsets
+- *(kafka)* add batched list_consumer_group_offsets_batched FFI wrapper
+- *(kafka)* add batched describe_consumer_groups_batched FFI wrapper
+- *(kafka)* expose admin_handle for batched Admin API callers
+- *(kafka)* add batched list_offsets_batched FFI wrapper
+- *(kafka)* scaffold admin module for batched Admin API wrappers
+
+### Other
+
+- address Copilot PR feedback (Tier 1)
+- *(readme)* describe batched Admin API collection model and updated sizing guidance
+- *(collector)* rewire hot path to batched Admin API with pre-filtered topics
+- *(kafka)* replace sequential describe_consumer_groups with batched Admin API
+
 ## [0.1.20](https://github.com/softwaremill/klag-exporter/compare/v0.1.19...v0.1.20) - 2026-03-25
 
 ### Other
