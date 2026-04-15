@@ -102,7 +102,12 @@ pub struct PerformanceConfig {
     /// Maximum number of consumer groups to fetch offsets for in parallel
     #[serde(default = "default_max_concurrent_groups")]
     pub max_concurrent_groups: usize,
-    /// Maximum number of partitions to fetch watermarks for in parallel
+    /// **Deprecated** since the batched Admin API replaced the per-partition
+    /// watermark fan-out: watermarks are now fetched in two batched
+    /// `ListOffsets` calls regardless of partition count, so a per-partition
+    /// concurrency cap has no effect. Kept in the schema so existing configs
+    /// continue to parse; emits a one-time startup INFO if set to a
+    /// non-default value. Will be removed in a future release.
     #[serde(default = "default_max_concurrent_watermarks")]
     pub max_concurrent_watermarks: usize,
     /// Number of collection cycles between Kafka client recycling.
@@ -140,6 +145,16 @@ pub struct PerformanceConfig {
     /// (refresh every cycle).
     #[serde(with = "humantime_serde", default = "default_metadata_cache_ttl")]
     pub metadata_cache_ttl: Duration,
+    /// How long to cache the list of consumer groups on the cluster.
+    /// `list_consumer_groups` is one RPC per collection cycle; caching
+    /// it shaves off one round trip whenever the set of groups is stable
+    /// (the common case). Newly-created consumer groups become visible
+    /// at most this long after they appear. Set to 0 to disable.
+    #[serde(
+        with = "humantime_serde",
+        default = "default_consumer_groups_cache_ttl"
+    )]
+    pub consumer_groups_cache_ttl: Duration,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -281,6 +296,10 @@ fn default_metadata_cache_ttl() -> Duration {
     Duration::from_secs(300)
 }
 
+fn default_consumer_groups_cache_ttl() -> Duration {
+    Duration::from_secs(60)
+}
+
 fn default_otel_endpoint() -> String {
     "http://localhost:4317".to_string()
 }
@@ -366,6 +385,7 @@ impl Default for PerformanceConfig {
             max_blocking_threads: default_max_blocking_threads(),
             compacted_topics_cache_ttl: default_compacted_topics_cache_ttl(),
             metadata_cache_ttl: default_metadata_cache_ttl(),
+            consumer_groups_cache_ttl: default_consumer_groups_cache_ttl(),
         }
     }
 }
@@ -767,6 +787,10 @@ bootstrap_servers = "localhost:9092"
         assert_eq!(
             config.exporter.performance.metadata_cache_ttl,
             Duration::from_secs(300)
+        );
+        assert_eq!(
+            config.exporter.performance.consumer_groups_cache_ttl,
+            Duration::from_secs(60)
         );
     }
 

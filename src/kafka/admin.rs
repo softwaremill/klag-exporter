@@ -305,30 +305,120 @@ pub struct BatchedMember {
 
 /// Describe consumer groups in batches via `rd_kafka_DescribeConsumerGroups`.
 /// Chunks the input into sub-calls of at most `chunk_size` groups each and
-/// aggregates results. Per-group errors are logged at WARN and the group is
-/// omitted from the returned Vec.
+/// dispatches the chunks concurrently (bounded by `max_concurrent_chunks`).
+/// Per-group errors inside a successful chunk are logged at WARN; a whole
+/// chunk that fails at the FFI/event layer is logged at WARN and the
+/// surviving chunks' results are returned.
 ///
 /// When `parse_assignments = false`, each returned `BatchedMember` has an
 /// empty `assignments: Vec<TopicPartition>`. This skips a per-member
 /// iteration over the assignment's `rd_kafka_topic_partition_list_t` — the
 /// data is only consumed by per-partition metrics (granularity = "partition"),
 /// so it's pure wasted work at the default topic granularity.
-pub fn describe_consumer_groups_batched(
-    admin: &AdminClient<DefaultClientContext>,
+pub async fn describe_consumer_groups_batched(
+    admin: Arc<AdminClient<DefaultClientContext>>,
     group_ids: &[&str],
     timeout: Duration,
     chunk_size: usize,
     parse_assignments: bool,
+    max_concurrent_chunks: usize,
 ) -> Result<Vec<BatchedGroupDescription>> {
     if group_ids.is_empty() {
         return Ok(Vec::new());
     }
     let chunk_size = chunk_size.max(1);
+    let max_concurrent = max_concurrent_chunks.max(1);
+
+    // Own the strings so each spawn_blocking closure can take them without
+    // borrowing from the caller's slice.
+    let chunks: Vec<Vec<String>> = group_ids
+        .chunks(chunk_size)
+        .map(|c| c.iter().map(|s| s.to_string()).collect())
+        .collect();
+
+    // Each chunk carries enough identifying context to make partial-
+    // failure warnings actionable: chunk index, chunk size, and the
+    // first / last group id in the chunk.
+    #[derive(Clone)]
+    struct ChunkMeta {
+        index: usize,
+        size: usize,
+        first: String,
+        last: String,
+    }
+
+    let semaphore = Arc::new(tokio::sync::Semaphore::new(max_concurrent));
+    let mut handles = Vec::with_capacity(chunks.len());
+
+    for (index, chunk) in chunks.into_iter().enumerate() {
+        let meta = ChunkMeta {
+            index,
+            size: chunk.len(),
+            first: chunk.first().cloned().unwrap_or_default(),
+            last: chunk.last().cloned().unwrap_or_default(),
+        };
+        let permit = Arc::clone(&semaphore);
+        let admin = Arc::clone(&admin);
+        handles.push(tokio::spawn(async move {
+            let _permit: tokio::sync::OwnedSemaphorePermit =
+                permit.acquire_owned().await.expect("semaphore closed");
+            let result = tokio::task::spawn_blocking(move || {
+                let refs: Vec<&str> = chunk.iter().map(|s| s.as_str()).collect();
+                describe_consumer_groups_one_chunk(&admin, &refs, timeout, parse_assignments)
+            })
+            .await;
+            (meta, result)
+        }));
+    }
+
+    let results = futures::future::join_all(handles).await;
     let mut out = Vec::with_capacity(group_ids.len());
-    for chunk in group_ids.chunks(chunk_size) {
-        let mut part =
-            describe_consumer_groups_one_chunk(admin, chunk, timeout, parse_assignments)?;
-        out.append(&mut part);
+    for r in results {
+        match r {
+            Ok((_meta, Ok(Ok(mut part)))) => out.append(&mut part),
+            Ok((meta, Ok(Err(e)))) => {
+                warn!(
+                    error = %e,
+                    chunk_index = meta.index,
+                    chunk_size = meta.size,
+                    first_group = %meta.first,
+                    last_group = %meta.last,
+                    "DescribeConsumerGroups chunk failed"
+                );
+            }
+            Ok((meta, Err(e))) => {
+                // A JoinError from spawn_blocking. Distinguish cancellation
+                // from panic so operators don't chase a bug that wasn't one.
+                let mode = if e.is_cancelled() {
+                    "cancelled"
+                } else if e.is_panic() {
+                    "panicked"
+                } else {
+                    "failed"
+                };
+                warn!(
+                    error = %e,
+                    chunk_index = meta.index,
+                    chunk_size = meta.size,
+                    first_group = %meta.first,
+                    last_group = %meta.last,
+                    "DescribeConsumerGroups chunk task {}",
+                    mode
+                );
+            }
+            Err(e) => {
+                // Outer tokio::spawn JoinError. Chunk meta is not available
+                // here because the outer task owned it — log what we have.
+                let mode = if e.is_cancelled() {
+                    "cancelled"
+                } else if e.is_panic() {
+                    "panicked"
+                } else {
+                    "failed"
+                };
+                warn!(error = %e, "DescribeConsumerGroups outer task {}", mode);
+            }
+        }
     }
     Ok(out)
 }

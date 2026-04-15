@@ -69,6 +69,22 @@ fn main() -> anyhow::Result<()> {
         "Configuration loaded"
     );
 
+    // One-time deprecation notice for config fields that no longer do
+    // anything but are still accepted for backward compatibility.
+    // `max_concurrent_watermarks` was the per-partition fetch_watermarks
+    // concurrency cap; the Tier 1 batched ListOffsets refactor replaced
+    // that fan-out with two broker-level calls, so this knob has no
+    // effect. Only warn when the user explicitly set a non-default value.
+    let watermarks_default = crate::config::PerformanceConfig::default().max_concurrent_watermarks;
+    if config.exporter.performance.max_concurrent_watermarks != watermarks_default {
+        info!(
+            configured_value = config.exporter.performance.max_concurrent_watermarks,
+            "performance.max_concurrent_watermarks is deprecated and has no effect since the \
+             batched Admin API replaced per-partition watermark fetch. Safe to remove from your \
+             config."
+        );
+    }
+
     // Bound the tokio blocking-thread pool. The default (512) commits up to
     // several GB of virtual memory just for native thread stacks; this
     // exporter only needs enough threads to cover concurrent FFI calls from
