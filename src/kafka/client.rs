@@ -469,6 +469,43 @@ impl KafkaClient {
             .map_err(KlagError::Kafka)
     }
 
+    /// Fetch low + high watermarks for an explicit partition set via batched
+    /// ListOffsets. Two Admin API calls total (EARLIEST + LATEST), regardless
+    /// of partition count. Replaces the prior per-partition `fetch_watermarks`
+    /// fan-out (O(partitions) blocking calls via a semaphore).
+    ///
+    /// This is a blocking call — run inside `spawn_blocking` from async code.
+    #[instrument(skip(self, partitions), fields(cluster = %self.config.name, count = partitions.len()))]
+    pub fn fetch_watermarks_for_partitions(
+        &self,
+        partitions: &[TopicPartition],
+    ) -> Result<HashMap<TopicPartition, (i64, i64)>> {
+        use crate::kafka::admin::{list_offsets_batched, OffsetSpec};
+
+        if partitions.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let admin = self.admin();
+        let lows =
+            list_offsets_batched(&admin, partitions, OffsetSpec::Earliest, self.timeout)?;
+        let highs =
+            list_offsets_batched(&admin, partitions, OffsetSpec::Latest, self.timeout)?;
+
+        let mut merged = HashMap::with_capacity(partitions.len());
+        for (tp, high) in highs {
+            let low = lows.get(&tp).copied().unwrap_or(0);
+            merged.insert(tp, (low, high));
+        }
+        // Surface partitions where only EARLIEST returned (rare — usually both
+        // complete together, but a broker-level error on LATEST could leave us
+        // with low-only data).
+        for (tp, low) in lows {
+            merged.entry(tp).or_insert((low, low));
+        }
+        Ok(merged)
+    }
+
     #[allow(dead_code)]
     #[instrument(skip(self, partitions), fields(cluster = %self.config.name, position = ?position, count = partitions.len()))]
     pub fn list_offsets(
