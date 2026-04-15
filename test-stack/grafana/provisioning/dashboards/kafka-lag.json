@@ -1181,7 +1181,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum by (topic) (rate(kafka_partition_latest_offset{cluster_name=~\"$cluster\", topic=~\"$topic\"}[1m]))",
+          "expr": "sum by (topic) (rate(kafka_partition_latest_offset{cluster_name=~\"$cluster\", topic=~\"$topic\"}[5m]))",
           "legendFormat": "{{topic}} (produced)",
           "refId": "A"
         },
@@ -1190,7 +1190,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum by (group, topic) (rate(kafka_consumergroup_group_offset{cluster_name=~\"$cluster\", group=~\"$consumer_group\", topic=~\"$topic\"}[1m]))",
+          "expr": "sum by (group, topic) (rate(kafka_consumergroup_group_offset{cluster_name=~\"$cluster\", group=~\"$consumer_group\", topic=~\"$topic\"}[5m]))",
           "legendFormat": "{{group}} - {{topic}} (consumed)",
           "refId": "B"
         }
