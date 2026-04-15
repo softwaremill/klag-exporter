@@ -1,7 +1,7 @@
 use crate::config::{CompiledFilters, PerformanceConfig};
 use crate::error::Result;
 use crate::kafka::client::{KafkaClient, TopicPartition};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tracing::{debug, instrument, warn};
@@ -17,6 +17,11 @@ pub struct OffsetsSnapshot {
     pub cluster_name: String,
     pub groups: Vec<GroupSnapshot>,
     pub watermarks: HashMap<TopicPartition, (i64, i64)>,
+    /// Topics configured with `cleanup.policy=compact`. Populated by
+    /// `collect_parallel` for the monitored topic set. Used by the lag
+    /// calculator to suppress data-loss warnings on compacted topics (where
+    /// low_watermark ahead of committed_offset is expected, not a loss).
+    pub compacted_topics: HashSet<String>,
     #[allow(dead_code)]
     pub timestamp_ms: i64,
 }
@@ -38,18 +43,6 @@ pub struct MemberSnapshot {
 }
 
 impl OffsetCollector {
-    /// Create a new OffsetCollector with default performance config.
-    /// Prefer `with_performance` for large clusters.
-    #[allow(dead_code)]
-    pub fn new(client: Arc<KafkaClient>, filters: CompiledFilters) -> Self {
-        let performance = client.performance().clone();
-        Self {
-            client,
-            filters,
-            performance,
-        }
-    }
-
     pub fn with_performance(
         client: Arc<KafkaClient>,
         filters: CompiledFilters,
@@ -62,107 +55,31 @@ impl OffsetCollector {
         }
     }
 
-    /// Collect offsets sequentially (legacy method).
-    /// For large clusters, use `collect_parallel` instead.
-    #[allow(dead_code)]
-    #[instrument(skip(self), fields(cluster = %self.client.cluster_name()))]
-    pub fn collect(&self) -> Result<OffsetsSnapshot> {
-        let start = std::time::Instant::now();
-
-        // List all consumer groups
-        let all_groups = self.client.list_consumer_groups()?;
-        debug!(
-            total_groups = all_groups.len(),
-            "Listed all consumer groups"
-        );
-
-        // Filter groups
-        let filtered_groups: Vec<_> = all_groups
-            .iter()
-            .filter(|g| self.filters.matches_group(&g.group_id))
-            .collect();
-        debug!(
-            filtered_groups = filtered_groups.len(),
-            "Filtered consumer groups"
-        );
-
-        // Get group descriptions
-        let group_ids: Vec<&str> = filtered_groups
-            .iter()
-            .map(|g| g.group_id.as_str())
-            .collect();
-        let descriptions = self.client.describe_consumer_groups(&group_ids)?;
-
-        // Fetch watermarks for all topics
-        let watermarks = self.client.fetch_all_watermarks()?;
-        debug!(partitions = watermarks.len(), "Fetched watermarks");
-
-        // Build group snapshots
-        let wm_keys: Vec<TopicPartition> = watermarks.keys().cloned().collect();
-        let mut groups = Vec::with_capacity(descriptions.len());
-        for desc in descriptions {
-            let offsets = self.client.list_consumer_group_offsets(
-                &desc.group_id,
-                &wm_keys,
-                self.performance.offset_fetch_timeout,
-            )?;
-
-            // Filter offsets by topic whitelist/blacklist
-            let filtered_offsets: HashMap<TopicPartition, i64> = offsets
-                .into_iter()
-                .filter(|(tp, _)| self.filters.matches_topic(&tp.topic))
-                .collect();
-
-            let members = desc
-                .members
-                .into_iter()
-                .map(|m| MemberSnapshot {
-                    member_id: m.member_id,
-                    client_id: m.client_id,
-                    client_host: m.client_host,
-                    assignments: m.assignments,
-                })
-                .collect();
-
-            groups.push(GroupSnapshot {
-                group_id: desc.group_id,
-                state: desc.state,
-                members,
-                offsets: filtered_offsets,
-            });
-        }
-
-        // Filter watermarks by topic
-        let filtered_watermarks: HashMap<TopicPartition, (i64, i64)> = watermarks
-            .into_iter()
-            .filter(|(tp, _)| self.filters.matches_topic(&tp.topic))
-            .collect();
-
-        let elapsed = start.elapsed();
-        debug!(elapsed_ms = elapsed.as_millis(), "Collection completed");
-
-        Ok(OffsetsSnapshot {
-            cluster_name: self.client.cluster_name().to_string(),
-            groups,
-            watermarks: filtered_watermarks,
-            timestamp_ms: chrono_timestamp_ms(),
-        })
-    }
-
-    /// Collect offsets with parallel watermark and group offset fetching.
-    /// This is more efficient for large clusters with many groups and partitions.
+    /// Collect offsets using batched Admin API calls. Drives everything from a
+    /// single filtered topic-set so internal / blacklisted topics never enter
+    /// the watermark + compacted-topic-config path.
+    ///
+    /// Per-cycle RPC count:
+    ///   - 2 batched ListOffsets calls (EARLIEST + LATEST), routed per leader
+    ///     broker internally — O(brokers) broker round trips regardless of
+    ///     partition count.
+    ///   - `ceil(groups / 100)` batched DescribeConsumerGroups calls.
+    ///   - 1 ListConsumerGroupOffsets call per group (`PER_CALL_CHUNK = 1`
+    ///     in `fetch_all_group_offsets_batched` because librdkafka 2.12
+    ///     rejects multi-group calls at the client layer; fanned out via
+    ///     `max_concurrent_groups`).
+    ///   - 1 DescribeConfigs call restricted to monitored topics.
     #[instrument(skip(self), fields(cluster = %self.client.cluster_name()))]
     pub async fn collect_parallel(&self) -> Result<OffsetsSnapshot> {
         let start = std::time::Instant::now();
 
-        // List all consumer groups (single call, cannot parallelize)
+        // List all consumer groups (single metadata call).
         let all_groups = self.client.list_consumer_groups()?;
         debug!(
             total_groups = all_groups.len(),
             "Listed all consumer groups"
         );
 
-        // Filter groups
         let filtered_groups: Vec<_> = all_groups
             .iter()
             .filter(|g| self.filters.matches_group(&g.group_id))
@@ -172,24 +89,60 @@ impl OffsetCollector {
             "Filtered consumer groups"
         );
 
-        // Get group descriptions (still sequential as this is a metadata call)
         let group_ids: Vec<&str> = filtered_groups
             .iter()
             .map(|g| g.group_id.as_str())
             .collect();
+
+        // Describe filtered groups via batched FFI (one chunked call).
         let descriptions = self.client.describe_consumer_groups(&group_ids)?;
 
-        // Fetch watermarks in parallel
-        let watermarks = self.client.fetch_all_watermarks_parallel().await?;
+        // Compute the monitored partition + topic set once from a single
+        // metadata fetch. Topic filter is applied here, BEFORE any
+        // partition-touching operation — this keeps `__consumer_offsets`
+        // (50 partitions by default) and blacklisted topics out of the hot
+        // path entirely.
+        let (monitored_partitions, monitored_topics) = self.list_monitored_partitions()?;
         debug!(
-            partitions = watermarks.len(),
-            "Fetched watermarks (parallel)"
+            partitions = monitored_partitions.len(),
+            topics = monitored_topics.len(),
+            "Computed monitored topic + partition set"
         );
 
-        // Fetch group offsets in parallel
-        let group_offsets = self
-            .fetch_all_group_offsets_parallel(&descriptions, &watermarks)
-            .await;
+        // Watermarks via batched ListOffsets (two blocking FFI calls). Move
+        // `monitored_partitions` into the blocking closure — no subsequent
+        // use in this function, and cloning an O(partitions) Vec every cycle
+        // is wasted work on large clusters.
+        let watermarks = {
+            let client = Arc::clone(&self.client);
+            tokio::task::spawn_blocking(move || {
+                client.fetch_watermarks_for_partitions(&monitored_partitions)
+            })
+            .await
+            .map_err(|e| {
+                crate::error::KlagError::Admin(format!("watermark task panicked: {e}"))
+            })??
+        };
+        debug!(
+            partitions = watermarks.len(),
+            "Fetched watermarks (batched)"
+        );
+
+        // Group offsets via batched multi-group ListConsumerGroupOffsets.
+        // `NULL` partitions → broker returns every committed partition per
+        // group; we then filter the (much smaller) response by topic.
+        let group_offsets = self.fetch_all_group_offsets_batched(&group_ids).await;
+
+        // Compacted-topic lookup restricted to monitored topics (huge saving
+        // vs. the prior full-cluster DescribeConfigs).
+        let compacted_topics = self
+            .client
+            .fetch_compacted_topics_for(&monitored_topics)
+            .await
+            .unwrap_or_else(|e| {
+                warn!(error = %e, "Failed to fetch compacted topics");
+                HashSet::new()
+            });
 
         // Build group snapshots
         let mut groups = Vec::with_capacity(descriptions.len());
@@ -199,7 +152,6 @@ impl OffsetCollector {
                 .cloned()
                 .unwrap_or_default();
 
-            // Filter offsets by topic whitelist/blacklist
             let filtered_offsets: HashMap<TopicPartition, i64> = offsets
                 .into_iter()
                 .filter(|(tp, _)| self.filters.matches_topic(&tp.topic))
@@ -224,95 +176,126 @@ impl OffsetCollector {
             });
         }
 
-        // Filter watermarks by topic
-        let filtered_watermarks: HashMap<TopicPartition, (i64, i64)> = watermarks
-            .into_iter()
-            .filter(|(tp, _)| self.filters.matches_topic(&tp.topic))
-            .collect();
-
         let elapsed = start.elapsed();
         debug!(
             elapsed_ms = elapsed.as_millis(),
-            "Parallel collection completed"
+            monitored_topics = monitored_topics.len(),
+            compacted_topics = compacted_topics.len(),
+            "Batched collection completed"
         );
 
         Ok(OffsetsSnapshot {
             cluster_name: self.client.cluster_name().to_string(),
             groups,
-            watermarks: filtered_watermarks,
+            watermarks,
+            compacted_topics,
             timestamp_ms: chrono_timestamp_ms(),
         })
     }
 
-    /// Fetch offsets for all groups in parallel with bounded concurrency.
-    /// Uses the Admin API (ListConsumerGroupOffsets) through the shared AdminClient — no per-group consumers needed.
-    async fn fetch_all_group_offsets_parallel(
+    /// Compute the partition list this collector should monitor by applying
+    /// the topic whitelist/blacklist to the current cluster metadata. Runs
+    /// before any partition-touching Admin API call.
+    fn list_monitored_partitions(&self) -> Result<(Vec<TopicPartition>, Vec<String>)> {
+        let metadata = self.client.fetch_metadata()?;
+        let mut partitions = Vec::new();
+        let mut topics = Vec::new();
+        for topic in metadata.topics() {
+            let name = topic.name();
+            if !self.filters.matches_topic(name) {
+                continue;
+            }
+            topics.push(name.to_string());
+            for p in topic.partitions() {
+                partitions.push(TopicPartition::new(name, p.id()));
+            }
+        }
+        Ok((partitions, topics))
+    }
+
+    /// Fetch offsets for all groups via batched Admin API.
+    ///
+    /// librdkafka 2.12's `rd_kafka_ListConsumerGroupOffsets` rejects calls with
+    /// more than one group per call ("Exactly one ListConsumerGroupOffsets must
+    /// be passed") even though the Kafka protocol supports multi-group
+    /// ListOffsetFetch (KIP-709). We therefore issue one FFI call per group,
+    /// fanned out with bounded concurrency via `max_concurrent_groups`.
+    ///
+    /// The win vs. the prior path is not "multi-group in one call" but:
+    ///   - `NULL` partition list passed to each request → broker returns only
+    ///     committed partitions; no 19K-entry partition-list clone per group.
+    ///   - No per-group `spawn` of a 19K-entry Vec clone.
+    ///
+    /// Once librdkafka lifts the single-group restriction we can increase the
+    /// inner `chunk_size` without code changes beyond this constant.
+    async fn fetch_all_group_offsets_batched(
         &self,
-        descriptions: &[crate::kafka::client::GroupDescription],
-        watermarks: &HashMap<TopicPartition, (i64, i64)>,
+        group_ids: &[&str],
     ) -> HashMap<String, HashMap<TopicPartition, i64>> {
-        let max_concurrent = self.performance.max_concurrent_groups;
+        use crate::kafka::admin::list_consumer_group_offsets_batched;
+
+        if group_ids.is_empty() {
+            return HashMap::new();
+        }
+
+        // librdkafka constraint: one group per FFI call.
+        const PER_CALL_CHUNK: usize = 1;
+
         let offset_timeout = self.performance.offset_fetch_timeout;
+        let max_concurrent = self.performance.max_concurrent_groups;
 
         debug!(
-            groups = descriptions.len(),
+            groups = group_ids.len(),
+            per_call_chunk = PER_CALL_CHUNK,
             max_concurrent = max_concurrent,
-            "Fetching group offsets in parallel via Admin API"
+            "Fetching group offsets (one call per group, fanned out)"
         );
 
         let semaphore = Arc::new(Semaphore::new(max_concurrent));
         let client = Arc::clone(&self.client);
-        let wm_keys: Vec<TopicPartition> = watermarks.keys().cloned().collect();
 
-        let mut handles = Vec::with_capacity(descriptions.len());
-
-        for desc in descriptions {
-            let group_id = desc.group_id.clone();
+        let mut handles = Vec::with_capacity(group_ids.len());
+        for gid in group_ids {
+            let gid = gid.to_string();
             let permit = semaphore.clone();
             let client_clone = Arc::clone(&client);
-            let partitions = wm_keys.clone();
-            let timeout = offset_timeout;
-
-            let handle = tokio::spawn(async move {
-                let permit_guard: OwnedSemaphorePermit =
+            handles.push(tokio::spawn(async move {
+                let _permit: OwnedSemaphorePermit =
                     permit.acquire_owned().await.expect("semaphore closed");
-
-                tokio::task::spawn_blocking(move || {
-                    let _permit = permit_guard;
-
-                    let offsets =
-                        client_clone.list_consumer_group_offsets(&group_id, &partitions, timeout);
-
-                    (group_id, offsets)
+                // Return the group id alongside the result so failure logs
+                // can report which group broke.
+                let result = tokio::task::spawn_blocking({
+                    let gid = gid.clone();
+                    move || {
+                        list_consumer_group_offsets_batched(
+                            &client_clone.admin_handle(),
+                            &[gid.as_str()],
+                            offset_timeout,
+                            PER_CALL_CHUNK,
+                        )
+                    }
                 })
-                .await
-            });
-
-            handles.push(handle);
+                .await;
+                (gid, result)
+            }));
         }
 
         let results = futures::future::join_all(handles).await;
 
-        let mut all_offsets = HashMap::new();
-        for result in results {
-            match result {
-                Ok(Ok((group_id, Ok(offsets)))) => {
-                    all_offsets.insert(group_id, offsets);
+        let mut merged: HashMap<String, HashMap<TopicPartition, i64>> = HashMap::new();
+        for r in results {
+            match r {
+                Ok((_gid, Ok(Ok(map)))) => merged.extend(map),
+                Ok((gid, Ok(Err(e)))) => {
+                    warn!(group = %gid, error = %e, "Group-offset call failed")
                 }
-                Ok(Ok((group_id, Err(e)))) => {
-                    warn!(group = group_id, error = %e, "Failed to fetch group offsets");
-                    all_offsets.insert(group_id, HashMap::new());
+                Ok((gid, Err(e))) => {
+                    warn!(group = %gid, error = %e, "Group-offset call task panicked")
                 }
-                Ok(Err(e)) => {
-                    warn!(error = %e, "Group offset fetch blocking task panicked");
-                }
-                Err(e) => {
-                    warn!(error = %e, "Group offset fetch task panicked");
-                }
+                Err(e) => warn!(error = %e, "Group-offset join error"),
             }
         }
-
-        all_offsets
+        merged
     }
 }
 
@@ -362,6 +345,7 @@ mod tests {
                 },
             ],
             watermarks: HashMap::new(),
+            compacted_topics: HashSet::new(),
             timestamp_ms: 0,
         };
 

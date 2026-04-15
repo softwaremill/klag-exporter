@@ -8,7 +8,7 @@ use crate::kafka::TimestampConsumer;
 use crate::leadership::LeadershipStatus;
 use crate::metrics::registry::MetricsRegistry;
 use futures::future::join_all;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{broadcast, OwnedSemaphorePermit, Semaphore};
@@ -253,37 +253,16 @@ impl ClusterManager {
     async fn collect_once(&self) -> Result<()> {
         let start = Instant::now();
 
-        // Collect offsets using parallel method for better performance with large clusters
+        // Collect offsets, watermarks, and compacted-topic set in one batched pass.
         let snapshot = self.offset_collector.collect_parallel().await?;
 
         debug!(
             cluster = %self.cluster_name,
             groups = snapshot.groups.len(),
             partitions = snapshot.watermarks.len(),
+            compacted_topics = snapshot.compacted_topics.len(),
             "Collected offsets"
         );
-
-        // Fetch compacted topics (topics with cleanup.policy=compact)
-        let compacted_topics = match self.client.fetch_compacted_topics().await {
-            Ok(topics) => {
-                if !topics.is_empty() {
-                    debug!(
-                        cluster = %self.cluster_name,
-                        compacted_topics = ?topics,
-                        "Identified compacted topics"
-                    );
-                }
-                topics
-            }
-            Err(e) => {
-                warn!(
-                    cluster = %self.cluster_name,
-                    error = %e,
-                    "Failed to fetch topic configs, assuming no compacted topics"
-                );
-                HashSet::new()
-            }
-        };
 
         // Collect timestamps if enabled (with concurrency limit)
         let timestamps = if let Some(ref sampler) = self.timestamp_sampler {
@@ -304,7 +283,7 @@ impl ClusterManager {
             &timestamps,
             now_ms,
             poll_time_ms,
-            &compacted_topics,
+            &snapshot.compacted_topics,
         );
 
         // Update registry with granularity and custom labels

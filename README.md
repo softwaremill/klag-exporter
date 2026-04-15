@@ -485,13 +485,20 @@ To calculate accurate time lag, klag-exporter fetches messages from Kafka® at t
 
 ## Large Cluster Configuration
 
-When monitoring large Kafka clusters with hundreds of consumer groups or thousands of partitions, the default settings may cause collection timeouts. The exporter includes performance tuning options to handle scale effectively.
+klag-exporter uses librdkafka's **batched Admin API** for its collection hot path. Per collection cycle it makes approximately:
+
+- **2** batched `ListOffsets` calls (one EARLIEST, one LATEST) regardless of partition count — librdkafka routes per leader broker internally, so on a 3-broker cluster this is ~6 broker RPCs even for 20,000 partitions
+- **`ceil(groups / 100)`** batched `DescribeConsumerGroups` calls (currently a single chunked call up to 100 groups at a time)
+- **one `ListConsumerGroupOffsets` call per group**, fanned out with `max_concurrent_groups` concurrency. Each call passes `NULL` partitions, so the broker returns only the committed partitions for that group — no client-side 19K-partition list is sent. *(librdkafka 2.12 enforces one group per call here; once that restriction is lifted, call count drops further.)*
+- **one `DescribeConfigs`** restricted to the monitored topic set (topics surviving the whitelist/blacklist), for compacted-topic detection
+
+Topic whitelist/blacklist is applied **before** any partition-touching call, so `__consumer_offsets` (50 partitions by default) and blacklisted topics are excluded from the hot path entirely.
 
 ### Symptoms of Scale Issues
 
 - `Collection timed out` errors in logs
-- `Failed to fetch committed offsets` with `OperationTimedOut` errors
 - Collection cycles consistently exceeding the poll interval
+- RSS climbing cycle over cycle
 
 ### Performance Tuning Options
 
@@ -499,32 +506,36 @@ Add the `[exporter.performance]` section to tune parallelism and timeouts:
 
 ```toml
 [exporter]
-poll_interval = "60s"  # Increase for large clusters
+poll_interval = "60s"  # Increase for very large clusters if needed
 
 [exporter.performance]
 # Timeout for individual Kafka API operations (metadata, watermarks)
-kafka_timeout = "15s"           # Default: 30s
+kafka_timeout = "30s"            # Default: 30s
 
-# Timeout for fetching committed offsets per consumer group
-offset_fetch_timeout = "5s"     # Default: 10s
+# Timeout for each per-group committed-offsets fetch
+offset_fetch_timeout = "10s"     # Default: 10s
 
-# Maximum consumer groups to fetch offsets for in parallel
-max_concurrent_groups = 20      # Default: 10
+# Parallel in-flight ListConsumerGroupOffsets calls (one group per call).
+# Increase on large clusters so a backlog of groups drains quickly.
+max_concurrent_groups = 30       # Default: 10
 
-# Maximum partitions to fetch watermarks for in parallel
-max_concurrent_watermarks = 100 # Default: 50
+# Legacy — no longer affects the hot path after the Tier 1 batched Admin
+# API refactor (watermarks now come from one batched ListOffsets per
+# broker), but still honored for compatibility.
+max_concurrent_watermarks = 50   # Default: 50
 
 # Client recycling interval — see Memory Management section below
-client_recycle_interval = 50    # Default: 50 (set 0 to disable)
+client_recycle_interval = 50     # Default: 50 (set 0 to disable)
 ```
 
 ### Recommended Settings by Cluster Size
 
-| Cluster Size | Groups | Partitions | poll_interval | max_concurrent_groups | max_concurrent_watermarks |
-|--------------|--------|------------|---------------|----------------------|---------------------------|
-| Small        | < 50   | < 500      | 30s           | 10 (default)         | 50 (default)              |
-| Medium       | 50-200 | 500-2000   | 60s           | 20                   | 100                       |
-| Large        | > 200  | > 2000     | 120s          | 30                   | 200                       |
+| Cluster Size | Groups | Partitions | poll_interval | max_concurrent_groups |
+|--------------|--------|------------|---------------|------------------------|
+| Small        | < 50   | < 500      | 30s           | 10 (default)           |
+| Medium       | 50-200 | 500-2000   | 60s           | 20                     |
+| Large        | 200–1000 | 2000–20000 | 60–120s | 30                     |
+| Very large   | > 1000 | > 20000    | 120–180s      | 50                     |
 
 ### Additional Recommendations for Large Clusters
 
