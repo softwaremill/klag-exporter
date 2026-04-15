@@ -201,44 +201,38 @@ impl KafkaClient {
         Ok(groups)
     }
 
+    /// Describe consumer groups via batched `rd_kafka_DescribeConsumerGroups`.
+    /// Replaces the prior sequential `fetch_group_list(Some(group_id))` loop
+    /// which dominated collection time on large clusters (O(groups) serial
+    /// round trips). `protocol_type`/`protocol` fields are not populated — they
+    /// are not consumed downstream (marked `#[allow(dead_code)]`).
     #[instrument(skip(self, group_ids), fields(cluster = %self.config.name, count = group_ids.len()))]
     pub fn describe_consumer_groups(&self, group_ids: &[&str]) -> Result<Vec<GroupDescription>> {
-        let consumer = self.consumer();
-        let mut descriptions = Vec::with_capacity(group_ids.len());
+        use crate::kafka::admin::describe_consumer_groups_batched;
 
-        for group_id in group_ids {
-            let group_list = consumer
-                .fetch_group_list(Some(group_id), self.timeout)
-                .map_err(KlagError::Kafka)?;
+        let admin = self.admin();
+        let batched =
+            describe_consumer_groups_batched(&admin, group_ids, self.timeout, 100)?;
 
-            for group in group_list.groups() {
-                let members = group
-                    .members()
-                    .iter()
-                    .map(|m| {
-                        let assignments =
-                            parse_member_assignment(m.assignment()).unwrap_or_default();
-
-                        GroupMemberInfo {
-                            member_id: m.id().to_string(),
-                            client_id: m.client_id().to_string(),
-                            client_host: m.client_host().to_string(),
-                            assignments,
-                        }
+        Ok(batched
+            .into_iter()
+            .map(|g| GroupDescription {
+                group_id: g.group_id,
+                state: g.state,
+                protocol_type: String::new(),
+                protocol: String::new(),
+                members: g
+                    .members
+                    .into_iter()
+                    .map(|m| GroupMemberInfo {
+                        member_id: m.member_id,
+                        client_id: m.client_id,
+                        client_host: m.client_host,
+                        assignments: m.assignments,
                     })
-                    .collect();
-
-                descriptions.push(GroupDescription {
-                    group_id: group.name().to_string(),
-                    state: group.state().to_string(),
-                    protocol_type: group.protocol_type().to_string(),
-                    protocol: group.protocol().to_string(),
-                    members,
-                });
-            }
-        }
-
-        Ok(descriptions)
+                    .collect(),
+            })
+            .collect())
     }
 
     /// Fetch committed offsets for a consumer group using the Admin API.
