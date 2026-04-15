@@ -369,19 +369,27 @@ impl Config {
         // The blocking-thread pool must be able to hold every concurrent FFI
         // call our hot path spawns simultaneously. `max_concurrent_groups`
         // is the dominant consumer; the timestamp sampler adds up to
-        // `max_concurrent_fetches` more. If the pool is too small, tasks
-        // queue behind each other and we effectively serialize — silently
-        // undoing the Tier 1 win.
-        let min_needed = self.exporter.performance.max_concurrent_groups
-            + self.exporter.timestamp_sampling.max_concurrent_fetches
-            + 4; // small headroom for watermark / compacted-topic / metadata FFI
+        // `max_concurrent_fetches` more — but only when sampling is enabled.
+        // If the pool is too small, tasks queue behind each other and we
+        // effectively serialize — silently undoing the Tier 1 win.
+        let sampler_contribution = if self.exporter.timestamp_sampling.enabled {
+            self.exporter.timestamp_sampling.max_concurrent_fetches
+        } else {
+            0
+        };
+        let min_needed = self.exporter.performance.max_concurrent_groups + sampler_contribution + 4; // small headroom for watermark / compacted-topic / metadata FFI
         if self.exporter.performance.max_blocking_threads < min_needed {
             return Err(KlagError::Config(format!(
                 "performance.max_blocking_threads ({}) must be >= max_concurrent_groups ({}) + \
-                 timestamp_sampling.max_concurrent_fetches ({}) + 4 = {}",
+                 timestamp_sampling.max_concurrent_fetches ({}, sampling {}) + 4 = {}",
                 self.exporter.performance.max_blocking_threads,
                 self.exporter.performance.max_concurrent_groups,
-                self.exporter.timestamp_sampling.max_concurrent_fetches,
+                sampler_contribution,
+                if self.exporter.timestamp_sampling.enabled {
+                    "enabled"
+                } else {
+                    "disabled"
+                },
                 min_needed,
             )));
         }
@@ -717,6 +725,33 @@ bootstrap_servers = "localhost:9092"
             "unexpected error: {msg}"
         );
         assert!(msg.contains("= 19"), "unexpected error: {msg}");
+    }
+
+    #[test]
+    fn test_max_blocking_threads_sampler_excluded_when_disabled() {
+        // Sampling disabled → sampler_contribution = 0. Required min becomes
+        // max_concurrent_groups (10 default) + 4 = 14. 16 must be accepted
+        // (would have been rejected with the old validation that always
+        // counted max_concurrent_fetches = 5).
+        let config_content = r#"
+[exporter]
+
+[exporter.timestamp_sampling]
+enabled = false
+
+[exporter.performance]
+max_blocking_threads = 16
+
+[[clusters]]
+name = "test"
+bootstrap_servers = "localhost:9092"
+"#;
+        let mut file = NamedTempFile::new().unwrap();
+        file.write_all(config_content.as_bytes()).unwrap();
+
+        let config = Config::load(Some(file.path().to_str().unwrap()))
+            .expect("should accept 16 when sampling is disabled");
+        assert_eq!(config.exporter.performance.max_blocking_threads, 16);
     }
 
     #[test]

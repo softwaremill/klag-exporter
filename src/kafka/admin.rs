@@ -28,18 +28,23 @@ use tracing::{debug, warn};
 /// On large clusters the same batched `ListOffsets` result contains every
 /// partition on the cluster — without interning, 19K `Arc<str>` allocations
 /// are wasted on topic names that only have a few dozen unique values.
+///
+/// The set is keyed directly by `Arc<str>`; `get_key_value(&str)` works
+/// because `Arc<T>: Borrow<T>`, so the lookup hashes the topic as a `str`
+/// but returns the existing `Arc<str>` key to clone. This keeps the
+/// allocation count at exactly one `Arc<str>` per unique topic.
 #[derive(Default)]
 struct TopicInterner {
-    by_name: HashMap<String, Arc<str>>,
+    by_name: HashMap<Arc<str>, ()>,
 }
 
 impl TopicInterner {
     fn intern(&mut self, topic: &str) -> Arc<str> {
-        if let Some(a) = self.by_name.get(topic) {
+        if let Some((a, ())) = self.by_name.get_key_value(topic) {
             return Arc::clone(a);
         }
         let a: Arc<str> = Arc::from(topic);
-        self.by_name.insert(topic.to_string(), Arc::clone(&a));
+        self.by_name.insert(Arc::clone(&a), ());
         a
     }
 }
