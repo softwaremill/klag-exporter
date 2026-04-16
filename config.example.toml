@@ -14,14 +14,25 @@ http_host = "0.0.0.0"
 granularity = "topic"
 
 [exporter.timestamp_sampling]
-# Enable time lag calculation via message timestamp fetching
+# Enable time lag calculation
 enabled = true
 
-# Cache timestamp for this duration to avoid excessive Kafka reads
-cache_ttl = "60s"
+# Time-lag estimation mode:
+#   "rate"    - (default) Estimate from observed high-watermark production
+#               rate. No consumer pool, no FFI, scales to any cluster size.
+#   "message" - Read the actual Kafka message at the committed offset and
+#               use its produce timestamp. Exact, but requires a pooled
+#               BaseConsumer per concurrent fetch (~5-15 MB each).
+# mode = "rate"
 
-# Maximum concurrent timestamp fetch operations (each is a full librdkafka client)
+# Message-mode settings (ignored when mode = "rate"):
+cache_ttl = "60s"
 max_concurrent_fetches = 5
+
+# Rate-mode settings (ignored when mode = "message"):
+# rate_history_samples = 5       # watermark observations per partition
+# rate_history_max_age = "10m"   # evict samples older than this
+# rate_min_msgs_per_sec = 0.01   # below this rate → time lag missing
 
 [exporter.performance]
 # Timeout for Kafka API operations (metadata, watermarks, etc.)

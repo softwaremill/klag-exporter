@@ -8,8 +8,37 @@ granularity = "partition"
 
 [exporter.timestamp_sampling]
 enabled = true
+
+# How the exporter derives the "seconds of lag" metric.
+#
+# Available modes:
+#   "message" - Reads the actual Kafka message at the consumer's committed
+#               offset and uses its produce timestamp. Exact, but each
+#               laggy partition requires a BaseConsumer pool slot and a
+#               blocking poll() call — significant memory and FFI overhead
+#               on large clusters (5-15 MB per pool slot).
+#
+#   "rate"    - Estimates time lag from the observed rate of change of
+#               high watermarks: time_lag = offset_lag / production_rate.
+#               No consumer pool, no FFI, pure CPU. Accuracy depends on
+#               steady producer rate; good enough for alerting, not
+#               audit-grade. Needs >= 2 collection cycles before producing
+#               a value (first cycle shows no time lag).
+#
+# For the test stack we use "message" so the Grafana dashboards show
+# the exact, lively per-burst time-lag values that demonstrate the
+# exporter's accuracy. Production deployments should default to "rate"
+# for large clusters (lower memory, no pool).
+mode = "message"
+
+# Message-mode settings (ignored when mode = "rate"):
 cache_ttl = "30s"
 max_concurrent_fetches = 5
+
+# Rate-mode settings (ignored when mode = "message"):
+# rate_history_samples = 5       # ring buffer size per partition
+# rate_history_max_age = "10m"   # drop samples older than this
+# rate_min_msgs_per_sec = 0.01   # below this → time lag reported as missing
 
 [exporter.performance]
 client_recycle_interval = 0  # disabled for small test cluster
