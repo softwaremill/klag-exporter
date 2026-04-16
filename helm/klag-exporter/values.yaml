@@ -127,8 +127,17 @@ config:
     granularity: "topic"
   exporter.timestamp_sampling:
     enabled: true
-    cache_ttl: "60s"
-    max_concurrent_fetches: 10
+    # Time-lag estimation mode: "rate" (default) or "message".
+    # "rate"    - Estimate from observed high-watermark production rate. No consumer pool, scales to any cluster size.
+    # "message" - Read the actual Kafka message at the committed offset. Exact, but requires a pooled BaseConsumer per fetch.
+    mode: "rate"
+    # Message-mode settings (ignored when mode = "rate"):
+    # cache_ttl: "60s"
+    # max_concurrent_fetches: 10
+    # Rate-mode settings (ignored when mode = "message"):
+    # rate_history_samples: 5
+    # rate_history_max_age: "10m"
+    # rate_min_msgs_per_sec: 0.01
   exporter.otel:
     enabled: false
     endpoint: "http://localhost:4317"
