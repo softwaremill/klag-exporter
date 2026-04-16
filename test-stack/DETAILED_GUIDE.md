@@ -216,9 +216,9 @@ granularity = "partition"    # Show partition-level detail
 
 [exporter.timestamp_sampling]
 enabled = true               # Calculate time lag
-mode = "message"             # "rate" (default) or "message" — see README
+mode = "message"             # "rate" (default) or "message" — see ../README.md (Time Lag Modes)
 cache_ttl = "30s"            # Message-mode: cache timestamps for 30s
-max_concurrent_fetches = 10  # Message-mode: parallel timestamp fetches
+max_concurrent_fetches = 5   # Message-mode: parallel timestamp fetches
 
 [[clusters]]
 name = "test-cluster"

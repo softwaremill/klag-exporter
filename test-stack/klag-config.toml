@@ -13,10 +13,10 @@ enabled = true
 #
 # Available modes:
 #   "message" - Reads the actual Kafka message at the consumer's committed
-#               offset and uses its produce timestamp. Exact, but each
-#               laggy partition requires a BaseConsumer pool slot and a
-#               blocking poll() call — significant memory and FFI overhead
-#               on large clusters (5-15 MB per pool slot).
+#               offset and uses its produce timestamp. Exact, but requires
+#               a fixed-size BaseConsumer pool (sized by max_concurrent_fetches)
+#               where each slot is a full librdkafka client (~5-15 MB).
+#               Memory scales with pool size, not partition count.
 #
 #   "rate"    - Estimates time lag from the observed rate of change of
 #               high watermarks: time_lag = offset_lag / production_rate.
