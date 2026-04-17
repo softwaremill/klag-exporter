@@ -29,6 +29,14 @@ pub struct ExporterConfig {
     pub leadership: LeadershipConfig,
     #[serde(default)]
     pub performance: PerformanceConfig,
+    /// How long after the last successful collection a cluster's metrics
+    /// are kept in `/metrics` output. Past this age the cluster's points
+    /// are filtered out so Prometheus sees a gap instead of a frozen
+    /// snapshot (e.g. when collection stalls on a broker issue).
+    /// If unset, defaults to `poll_interval × 3`, which gives two full
+    /// poll cycles of slack before metrics vanish.
+    #[serde(default, with = "humantime_serde::option")]
+    pub staleness_threshold: Option<Duration>,
 }
 
 #[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq)]
@@ -436,6 +444,22 @@ impl Config {
             cluster.validate()?;
         }
 
+        // A zero poll_interval would busy-loop the collector and — since the
+        // default staleness threshold is derived from it — also make every
+        // cluster's metrics disappear from /metrics instantly.
+        if self.exporter.poll_interval.is_zero() {
+            return Err(KlagError::Config(
+                "poll_interval must be greater than 0".to_string(),
+            ));
+        }
+        if let Some(threshold) = self.exporter.staleness_threshold {
+            if threshold.is_zero() {
+                return Err(KlagError::Config(
+                    "staleness_threshold must be greater than 0 when set".to_string(),
+                ));
+            }
+        }
+
         // Validate performance config
         if self.exporter.performance.max_concurrent_groups == 0 {
             return Err(KlagError::Config(
@@ -791,6 +815,79 @@ bootstrap_servers = "localhost:9092"
         assert_eq!(
             config.exporter.performance.consumer_groups_cache_ttl,
             Duration::from_secs(60)
+        );
+        assert!(
+            config.exporter.staleness_threshold.is_none(),
+            "staleness_threshold should default to None (falls back to poll_interval * 3)"
+        );
+    }
+
+    #[test]
+    fn test_zero_poll_interval_rejected() {
+        let config_content = r#"
+[exporter]
+poll_interval = "0s"
+
+[[clusters]]
+name = "test"
+bootstrap_servers = "localhost:9092"
+"#;
+
+        let mut file = NamedTempFile::new().unwrap();
+        file.write_all(config_content.as_bytes()).unwrap();
+
+        let err = Config::load(Some(file.path().to_str().unwrap()))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("poll_interval must be greater than 0"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_zero_staleness_threshold_rejected() {
+        let config_content = r#"
+[exporter]
+poll_interval = "30s"
+staleness_threshold = "0s"
+
+[[clusters]]
+name = "test"
+bootstrap_servers = "localhost:9092"
+"#;
+
+        let mut file = NamedTempFile::new().unwrap();
+        file.write_all(config_content.as_bytes()).unwrap();
+
+        let err = Config::load(Some(file.path().to_str().unwrap()))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("staleness_threshold must be greater than 0"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_staleness_threshold_custom_value() {
+        let config_content = r#"
+[exporter]
+poll_interval = "30s"
+staleness_threshold = "10m"
+
+[[clusters]]
+name = "test"
+bootstrap_servers = "localhost:9092"
+"#;
+
+        let mut file = NamedTempFile::new().unwrap();
+        file.write_all(config_content.as_bytes()).unwrap();
+
+        let config = Config::load(Some(file.path().to_str().unwrap())).unwrap();
+        assert_eq!(
+            config.exporter.staleness_threshold,
+            Some(Duration::from_secs(600))
         );
     }
 

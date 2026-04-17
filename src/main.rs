@@ -98,8 +98,22 @@ fn main() -> anyhow::Result<()> {
 }
 
 async fn async_main(config: Config) -> anyhow::Result<()> {
-    // Create shared metrics registry
-    let registry = Arc::new(MetricsRegistry::new());
+    // Create shared metrics registry. Stale-cluster filtering uses the
+    // explicit `staleness_threshold` when configured, otherwise
+    // `poll_interval * 3` so it scales automatically with the poll cadence.
+    let staleness_threshold = config
+        .exporter
+        .staleness_threshold
+        .unwrap_or_else(|| config.exporter.poll_interval.saturating_mul(3));
+    info!(
+        threshold_secs = staleness_threshold.as_secs(),
+        poll_interval_secs = config.exporter.poll_interval.as_secs(),
+        explicit = config.exporter.staleness_threshold.is_some(),
+        "Metrics staleness threshold configured"
+    );
+    let registry = Arc::new(MetricsRegistry::with_staleness_threshold(
+        staleness_threshold,
+    ));
 
     // Create shutdown channel
     let (shutdown_tx, _) = broadcast::channel::<()>(1);
