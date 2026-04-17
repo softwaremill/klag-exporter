@@ -21,7 +21,10 @@ use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-/// Default staleness threshold: 3x the typical poll interval
+/// Fallback staleness threshold used only when `MetricsRegistry::new()` is
+/// called without an explicit value (test helpers). Production startup in
+/// `main.rs` always derives this from the configured `poll_interval` (or
+/// `exporter.staleness_threshold` if set) via `with_staleness_threshold`.
 const DEFAULT_STALENESS_THRESHOLD: Duration = Duration::from_secs(90);
 
 pub struct MetricsRegistry {

@@ -29,6 +29,14 @@ pub struct ExporterConfig {
     pub leadership: LeadershipConfig,
     #[serde(default)]
     pub performance: PerformanceConfig,
+    /// How long after the last successful collection a cluster's metrics
+    /// are kept in `/metrics` output. Past this age the cluster's points
+    /// are filtered out so Prometheus sees a gap instead of a frozen
+    /// snapshot (e.g. when collection stalls on a broker issue).
+    /// If unset, defaults to `poll_interval × 3`, which gives two full
+    /// poll cycles of slack before metrics vanish.
+    #[serde(default, with = "humantime_serde::option")]
+    pub staleness_threshold: Option<Duration>,
 }
 
 #[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq)]
@@ -791,6 +799,32 @@ bootstrap_servers = "localhost:9092"
         assert_eq!(
             config.exporter.performance.consumer_groups_cache_ttl,
             Duration::from_secs(60)
+        );
+        assert!(
+            config.exporter.staleness_threshold.is_none(),
+            "staleness_threshold should default to None (falls back to poll_interval * 3)"
+        );
+    }
+
+    #[test]
+    fn test_staleness_threshold_custom_value() {
+        let config_content = r#"
+[exporter]
+poll_interval = "30s"
+staleness_threshold = "10m"
+
+[[clusters]]
+name = "test"
+bootstrap_servers = "localhost:9092"
+"#;
+
+        let mut file = NamedTempFile::new().unwrap();
+        file.write_all(config_content.as_bytes()).unwrap();
+
+        let config = Config::load(Some(file.path().to_str().unwrap())).unwrap();
+        assert_eq!(
+            config.exporter.staleness_threshold,
+            Some(Duration::from_secs(600))
         );
     }
 

@@ -13,6 +13,14 @@ http_host = "0.0.0.0"
 # "topic" aggregates per-topic, "partition" includes partition-level metrics
 granularity = "topic"
 
+# How long a cluster's metrics remain in /metrics output after its last
+# successful collection. Past this age the cluster is filtered out so
+# Prometheus sees a gap rather than a frozen snapshot. Defaults to
+# poll_interval * 3 when unset — raise this on large clusters where a
+# single collection cycle can take several minutes (timestamp sampling
+# in 'message' mode, many consumer groups, etc.).
+# staleness_threshold = "3m"
+
 [exporter.timestamp_sampling]
 # Enable time lag calculation
 enabled = true
