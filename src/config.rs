@@ -444,6 +444,22 @@ impl Config {
             cluster.validate()?;
         }
 
+        // A zero poll_interval would busy-loop the collector and — since the
+        // default staleness threshold is derived from it — also make every
+        // cluster's metrics disappear from /metrics instantly.
+        if self.exporter.poll_interval.is_zero() {
+            return Err(KlagError::Config(
+                "poll_interval must be greater than 0".to_string(),
+            ));
+        }
+        if let Some(threshold) = self.exporter.staleness_threshold {
+            if threshold.is_zero() {
+                return Err(KlagError::Config(
+                    "staleness_threshold must be greater than 0 when set".to_string(),
+                ));
+            }
+        }
+
         // Validate performance config
         if self.exporter.performance.max_concurrent_groups == 0 {
             return Err(KlagError::Config(
@@ -803,6 +819,53 @@ bootstrap_servers = "localhost:9092"
         assert!(
             config.exporter.staleness_threshold.is_none(),
             "staleness_threshold should default to None (falls back to poll_interval * 3)"
+        );
+    }
+
+    #[test]
+    fn test_zero_poll_interval_rejected() {
+        let config_content = r#"
+[exporter]
+poll_interval = "0s"
+
+[[clusters]]
+name = "test"
+bootstrap_servers = "localhost:9092"
+"#;
+
+        let mut file = NamedTempFile::new().unwrap();
+        file.write_all(config_content.as_bytes()).unwrap();
+
+        let err = Config::load(Some(file.path().to_str().unwrap()))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("poll_interval must be greater than 0"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_zero_staleness_threshold_rejected() {
+        let config_content = r#"
+[exporter]
+poll_interval = "30s"
+staleness_threshold = "0s"
+
+[[clusters]]
+name = "test"
+bootstrap_servers = "localhost:9092"
+"#;
+
+        let mut file = NamedTempFile::new().unwrap();
+        file.write_all(config_content.as_bytes()).unwrap();
+
+        let err = Config::load(Some(file.path().to_str().unwrap()))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("staleness_threshold must be greater than 0"),
+            "unexpected error: {err}"
         );
     }
 
