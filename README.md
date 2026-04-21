@@ -234,6 +234,11 @@ poll_interval = "30s"
 http_port = 8000
 http_host = "0.0.0.0"
 granularity = "partition"  # "topic" or "partition"
+# Optional. When unset, defaults to poll_interval * 3. Past this age a
+# cluster's metrics are filtered out of /metrics so Prometheus sees a
+# gap instead of a frozen snapshot. Raise it on large clusters where a
+# single collection cycle can take several minutes.
+# staleness_threshold = "3m"
 
 [exporter.timestamp_sampling]
 enabled = true
@@ -561,6 +566,14 @@ client_recycle_interval = 50     # Default: 50 (set 0 to disable)
 | Medium       | 50-200 | 500-2000   | 60s           | 20                     |
 | Large        | 200–1000 | 2000–20000 | 60–120s | 30                     |
 | Very large   | > 1000 | > 20000    | 120–180s      | 50                     |
+
+When you raise `poll_interval`, the staleness threshold that controls how
+long metrics linger in `/metrics` after a successful collection scales
+with it automatically — the default is `poll_interval * 3`, so at
+`poll_interval = 120s` metrics survive for 6 minutes before being
+filtered out as stale. Set `exporter.staleness_threshold` explicitly if
+you want to decouple it from the poll cadence (e.g. pin it to a fixed
+duration for alerting consistency).
 
 ### Additional Recommendations for Large Clusters
 
