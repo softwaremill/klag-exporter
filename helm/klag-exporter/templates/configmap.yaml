@@ -30,7 +30,7 @@ data:
     {{- if .rate_history_max_age }}
     rate_history_max_age = {{ .rate_history_max_age | quote }}
     {{- end }}
-    {{- if .rate_min_msgs_per_sec }}
+    {{- if hasKey . "rate_min_msgs_per_sec" }}
     rate_min_msgs_per_sec = {{ .rate_min_msgs_per_sec }}
     {{- end }}
     {{- end }}
