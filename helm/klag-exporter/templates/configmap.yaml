@@ -17,8 +17,22 @@ data:
     [exporter.timestamp_sampling]
     {{- with index .Values.config "exporter.timestamp_sampling" }}
     enabled = {{ .enabled }}
+    mode = {{ .mode | quote }}
+    {{- if .cache_ttl }}
     cache_ttl = {{ .cache_ttl | quote }}
+    {{- end }}
+    {{- if .max_concurrent_fetches }}
     max_concurrent_fetches = {{ .max_concurrent_fetches }}
+    {{- end }}
+    {{- if .rate_history_samples }}
+    rate_history_samples = {{ .rate_history_samples }}
+    {{- end }}
+    {{- if .rate_history_max_age }}
+    rate_history_max_age = {{ .rate_history_max_age | quote }}
+    {{- end }}
+    {{- if hasKey . "rate_min_msgs_per_sec" }}
+    rate_min_msgs_per_sec = {{ .rate_min_msgs_per_sec }}
+    {{- end }}
     {{- end }}
 
     [exporter.otel]
