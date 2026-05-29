@@ -235,5 +235,7 @@ affinity: {}
 
 serviceMonitor:
   enabled: false
-  # Additional cconfig for endpoint
+  # Additional config for endpoint
   additionalEndpointConfig: {}
+  # Additional config for serviceMonitor spec
+  additionalConfig: {}
