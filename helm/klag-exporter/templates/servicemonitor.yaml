@@ -15,7 +15,7 @@ spec:
       {{- with .Values.serviceMonitor.additionalEndpointConfig }}
       {{- toYaml . | nindent 6 }}
       {{- end }}
-  {{- with .Values.serviceMonitor.additionlConfig }}
+  {{- with .Values.serviceMonitor.additionalConfig }}
   {{- toYaml . | nindent 2 }}
   {{- end }}
 {{ end }}
