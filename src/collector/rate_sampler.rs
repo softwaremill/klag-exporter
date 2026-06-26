@@ -4,7 +4,7 @@
 //! at the consumer's committed offset and subtract its produce timestamp from
 //! "now". That works but it scales poorly on large clusters: every laggy
 //! partition requires a full `assign()` + `poll()` round trip through a
-//! librdkafka BaseConsumer, and the consumer pool itself occupies tens to
+//! librdkafka `BaseConsumer`, and the consumer pool itself occupies tens to
 //! hundreds of MB of resident memory (each `BaseConsumer` is a full
 //! librdkafka client with its own metadata cache and background threads).
 //!
@@ -33,7 +33,7 @@ struct WatermarkSample {
 }
 
 /// Shared rate-computation helper. Returns `None` if < 2 samples, Δtime
-/// ≤ 0, Δhigh_watermark ≤ 0 (retention rewind), or rate below floor.
+/// ≤ 0, `Δhigh_watermark` ≤ 0 (retention rewind), or rate below floor.
 fn compute_rate(buf: &VecDeque<WatermarkSample>, min_msgs_per_sec: f64) -> Option<f64> {
     if buf.len() < 2 {
         return None;
@@ -80,7 +80,10 @@ impl RateSampler {
     /// no longer present in `watermarks` (topic deleted / filter change).
     pub fn record_watermarks(&self, watermarks: &HashMap<TopicPartition, (i64, i64)>) {
         let now = Instant::now();
-        let mut history = self.history.lock().unwrap_or_else(|p| p.into_inner());
+        let mut history = self
+            .history
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
 
         // Drop entries for partitions no longer being monitored.
         history.retain(|tp, _| watermarks.contains_key(tp));
@@ -118,7 +121,10 @@ impl RateSampler {
         if lag <= 0 {
             return Some(0.0);
         }
-        let history = self.history.lock().unwrap_or_else(|p| p.into_inner());
+        let history = self
+            .history
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         compute_rate(history.get(tp)?, self.min_msgs_per_sec).map(|rate| lag as f64 / rate)
     }
 
@@ -133,20 +139,27 @@ impl RateSampler {
     /// available this cycle (insufficient samples, below floor, or
     /// retention rewind).
     pub fn rates_snapshot(&self) -> HashMap<TopicPartition, f64> {
-        let history = self.history.lock().unwrap_or_else(|p| p.into_inner());
+        let history = self
+            .history
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut out = HashMap::with_capacity(history.len());
         for (tp, buf) in history.iter() {
             if let Some(rate) = compute_rate(buf, self.min_msgs_per_sec) {
                 out.insert(tp.clone(), rate);
             }
         }
+        drop(history);
         out
     }
 
     /// Current number of partitions with history entries. Used for
     /// diagnostics / metrics.
     pub fn tracked_partitions(&self) -> usize {
-        self.history.lock().unwrap_or_else(|p| p.into_inner()).len()
+        self.history
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len()
     }
 
     /// Drop all history. Used when a cluster-wide reset is needed (e.g.
@@ -156,7 +169,7 @@ impl RateSampler {
     pub fn clear(&self) {
         self.history
             .lock()
-            .unwrap_or_else(|p| p.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clear();
     }
 }

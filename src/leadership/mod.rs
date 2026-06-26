@@ -22,8 +22,8 @@ pub enum LeadershipState {
 }
 
 impl LeadershipState {
-    pub fn is_leader(&self) -> bool {
-        matches!(self, LeadershipState::Leader)
+    pub const fn is_leader(self) -> bool {
+        matches!(self, Self::Leader)
     }
 }
 
