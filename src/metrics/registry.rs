@@ -18,6 +18,7 @@ use crate::metrics::definitions::{
 use crate::metrics::types::{Labels, MetricPoint, OtelDataPoint, OtelMetric};
 use dashmap::DashMap;
 use std::collections::{HashMap, HashSet};
+use std::fmt::Write;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -54,20 +55,20 @@ impl MetricsRegistry {
 
     /// Update metrics with default options (partition granularity, no custom labels)
     #[allow(dead_code)]
-    pub fn update(&self, cluster: &str, lag_metrics: LagMetrics) {
+    pub fn update(&self, cluster: &str, lag_metrics: &LagMetrics) {
         self.update_with_options(
             cluster,
             lag_metrics,
             Granularity::Partition,
             &HashMap::new(),
-        )
+        );
     }
 
     /// Update metrics with granularity control and custom labels
     pub fn update_with_options(
         &self,
         cluster: &str,
-        lag_metrics: LagMetrics,
+        lag_metrics: &LagMetrics,
         granularity: Granularity,
         custom_labels: &HashMap<String, String>,
     ) {
@@ -218,7 +219,7 @@ impl MetricsRegistry {
             points.push(MetricPoint::gauge(
                 METRIC_GROUP_STATE,
                 labels,
-                m.state as f64,
+                f64::from(m.state),
                 HELP_GROUP_STATE,
             ));
         }
@@ -296,11 +297,11 @@ impl MetricsRegistry {
         self.last_scrape_duration_ms.load(Ordering::SeqCst) as f64 / 1000.0
     }
 
-    /// Check if any cluster's data is stale (older than staleness_threshold)
+    /// Check if any cluster's data is stale (older than `staleness_threshold`)
     #[allow(dead_code)]
     pub fn is_data_stale(&self) -> bool {
         let now = Instant::now();
-        for entry in self.last_update.iter() {
+        for entry in &self.last_update {
             if now.duration_since(*entry.value()) > self.staleness_threshold {
                 return true;
             }
@@ -337,11 +338,11 @@ impl MetricsRegistry {
                     return true;
                 }
                 // Check if this cluster's data is fresh
-                if let Some(last_update) = self.last_update.get(entry.key()) {
-                    now.duration_since(*last_update) <= self.staleness_threshold
-                } else {
-                    false // No timestamp means stale
-                }
+                self.last_update
+                    .get(entry.key())
+                    .is_some_and(|last_update| {
+                        now.duration_since(*last_update) <= self.staleness_threshold
+                    })
             })
             .flat_map(|entry| entry.value().clone())
             .collect();
@@ -365,55 +366,48 @@ impl MetricsRegistry {
             // Output HELP and TYPE once per metric
             if !seen_metrics.contains(&name) {
                 let first = &points[0];
-                output.push_str(&format!("# HELP {} {}\n", name, first.help));
-                output.push_str(&format!("# TYPE {} {}\n", name, first.metric_type.as_str()));
+                let _ = writeln!(output, "# HELP {} {}", name, first.help);
+                let _ = writeln!(output, "# TYPE {} {}", name, first.metric_type.as_str());
                 seen_metrics.insert(name.clone());
             }
 
             // Output all data points
             for point in points {
-                let labels_str = render_labels(&point.labels);
-                output.push_str(&format!(
-                    "{}{} {}\n",
+                let _ = writeln!(
+                    output,
+                    "{}{} {}",
                     point.name,
-                    labels_str,
+                    render_labels(&point.labels),
                     point.value.as_f64()
-                ));
+                );
             }
         }
 
         // Add scrape duration metric
         let scrape_duration = self.get_scrape_duration_seconds();
-        output.push_str(&format!(
-            "# HELP {} {}\n",
-            METRIC_SCRAPE_DURATION_SECONDS, HELP_SCRAPE_DURATION_SECONDS
-        ));
-        output.push_str(&format!(
-            "# TYPE {} gauge\n",
-            METRIC_SCRAPE_DURATION_SECONDS
-        ));
-        output.push_str(&format!(
-            "{} {:.6}\n",
-            METRIC_SCRAPE_DURATION_SECONDS, scrape_duration
-        ));
+        let _ = writeln!(
+            output,
+            "# HELP {METRIC_SCRAPE_DURATION_SECONDS} {HELP_SCRAPE_DURATION_SECONDS}"
+        );
+        let _ = writeln!(output, "# TYPE {METRIC_SCRAPE_DURATION_SECONDS} gauge");
+        let _ = writeln!(
+            output,
+            "{METRIC_SCRAPE_DURATION_SECONDS} {scrape_duration:.6}"
+        );
 
         // Add exporter health metric
-        output.push_str(&format!("# HELP {} {}\n", METRIC_UP, HELP_UP));
-        output.push_str(&format!("# TYPE {} gauge\n", METRIC_UP));
-        output.push_str(&format!(
-            "{} {}\n",
-            METRIC_UP,
-            if self.is_healthy() { 1 } else { 0 }
-        ));
+        let _ = writeln!(output, "# HELP {METRIC_UP} {HELP_UP}");
+        let _ = writeln!(output, "# TYPE {METRIC_UP} gauge");
+        let _ = writeln!(output, "{} {}", METRIC_UP, i32::from(self.is_healthy()));
 
         // Add last update timestamp metric per cluster
         if !self.last_update_timestamp.is_empty() {
-            output.push_str(&format!(
-                "# HELP {} {}\n",
-                METRIC_LAST_UPDATE_TIMESTAMP, HELP_LAST_UPDATE_TIMESTAMP
-            ));
-            output.push_str(&format!("# TYPE {} gauge\n", METRIC_LAST_UPDATE_TIMESTAMP));
-            for entry in self.last_update_timestamp.iter() {
+            let _ = writeln!(
+                output,
+                "# HELP {METRIC_LAST_UPDATE_TIMESTAMP} {HELP_LAST_UPDATE_TIMESTAMP}"
+            );
+            let _ = writeln!(output, "# TYPE {METRIC_LAST_UPDATE_TIMESTAMP} gauge");
+            for entry in &self.last_update_timestamp {
                 let cluster = entry.key();
                 let timestamp = entry.value();
                 // Only include non-stale clusters if filtering is enabled
@@ -424,10 +418,10 @@ impl MetricsRegistry {
                         }
                     }
                 }
-                output.push_str(&format!(
-                    "{}{{{}=\"{}\"}} {}\n",
-                    METRIC_LAST_UPDATE_TIMESTAMP, LABEL_CLUSTER_NAME, cluster, timestamp
-                ));
+                let _ = writeln!(
+                    output,
+                    "{METRIC_LAST_UPDATE_TIMESTAMP}{{{LABEL_CLUSTER_NAME}=\"{cluster}\"}} {timestamp}"
+                );
             }
         }
 
@@ -438,10 +432,10 @@ impl MetricsRegistry {
         let mut otel_metrics: HashMap<String, OtelMetric> = HashMap::new();
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as i64;
+            .unwrap_or_default()
+            .as_millis();
 
-        for entry in self.metrics.iter() {
+        for entry in &self.metrics {
             for point in entry.value() {
                 let metric = otel_metrics
                     .entry(point.name.clone())
@@ -519,7 +513,7 @@ fn render_labels(labels: &Labels) -> String {
         .collect::<Vec<_>>()
         .join(",");
 
-    format!("{{{}}}", label_str)
+    format!("{{{label_str}}}")
 }
 
 fn escape_label_value(value: &str) -> String {
@@ -594,7 +588,7 @@ mod tests {
         let registry = MetricsRegistry::new();
 
         let metrics1 = make_lag_metrics();
-        registry.update("test-cluster", metrics1);
+        registry.update("test-cluster", &metrics1);
 
         let output1 = registry.render_prometheus();
         assert!(output1.contains("kafka_consumergroup_group_lag"));
@@ -602,7 +596,7 @@ mod tests {
         // Update with new metrics
         let mut metrics2 = make_lag_metrics();
         metrics2.partition_metrics[0].lag = 20;
-        registry.update("test-cluster", metrics2);
+        registry.update("test-cluster", &metrics2);
 
         let output2 = registry.render_prometheus();
         assert!(output2.contains("20")); // New lag value
@@ -612,7 +606,7 @@ mod tests {
     fn test_prometheus_format_gauge() {
         let registry = MetricsRegistry::new();
         let metrics = make_lag_metrics();
-        registry.update("test-cluster", metrics);
+        registry.update("test-cluster", &metrics);
 
         let output = registry.render_prometheus();
 
@@ -626,7 +620,7 @@ mod tests {
     fn test_prometheus_format_labels() {
         let registry = MetricsRegistry::new();
         let metrics = make_lag_metrics();
-        registry.update("test-cluster", metrics);
+        registry.update("test-cluster", &metrics);
 
         let output = registry.render_prometheus();
 
@@ -648,7 +642,7 @@ mod tests {
         let registry = MetricsRegistry::new();
 
         let metrics = make_lag_metrics();
-        registry.update("cluster1", metrics);
+        registry.update("cluster1", &metrics);
 
         assert_eq!(registry.cluster_count(), 1);
 
@@ -684,7 +678,12 @@ mod tests {
         let registry = MetricsRegistry::new();
         let metrics = make_lag_metrics();
 
-        registry.update_with_options("test-cluster", metrics, Granularity::Topic, &HashMap::new());
+        registry.update_with_options(
+            "test-cluster",
+            &metrics,
+            Granularity::Topic,
+            &HashMap::new(),
+        );
 
         let output = registry.render_prometheus();
 
@@ -708,7 +707,7 @@ mod tests {
 
         registry.update_with_options(
             "test-cluster",
-            metrics,
+            &metrics,
             Granularity::Partition,
             &custom_labels,
         );

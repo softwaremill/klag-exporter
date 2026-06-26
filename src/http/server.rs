@@ -35,9 +35,7 @@ impl HttpServer {
         registry: Arc<MetricsRegistry>,
         leadership: LeadershipStatus,
     ) -> Self {
-        let addr: SocketAddr = format!("{}:{}", host, port)
-            .parse()
-            .expect("Invalid address");
+        let addr: SocketAddr = format!("{host}:{port}").parse().expect("Invalid address");
 
         Self {
             addr,

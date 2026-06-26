@@ -50,7 +50,7 @@ pub enum Granularity {
 #[serde(rename_all = "lowercase")]
 pub enum TimestampSamplingMode {
     /// Read the actual message at the committed offset via a pooled
-    /// BaseConsumer and use its produce timestamp. Exact, but the pool
+    /// `BaseConsumer` and use its produce timestamp. Exact, but the pool
     /// occupies meaningful resident memory and creates per-cycle FFI
     /// churn on large clusters.
     Message,
@@ -80,7 +80,7 @@ pub struct TimestampSamplingConfig {
     /// `rate` mode (rate mode does no I/O).
     #[serde(default = "default_max_concurrent_fetches")]
     pub max_concurrent_fetches: usize,
-    /// `rate` mode: maximum number of (time, high_watermark) samples
+    /// `rate` mode: maximum number of (time, `high_watermark`) samples
     /// retained per partition. Larger = smoother rate estimate, more
     /// memory. Default 5.
     #[serde(default = "default_rate_history_samples")]
@@ -190,14 +190,14 @@ pub struct LeadershipConfig {
     /// Namespace for the Lease resource. Supports env var substitution.
     #[serde(default = "default_lease_namespace")]
     pub lease_namespace: String,
-    /// Identity of this instance. Defaults to HOSTNAME or POD_NAME env var.
+    /// Identity of this instance. Defaults to HOSTNAME or `POD_NAME` env var.
     #[allow(dead_code)] // Used by kubernetes feature
     pub identity: Option<String>,
     /// Duration the lease is valid in seconds.
     #[serde(default = "default_lease_duration")]
     #[allow(dead_code)] // Used by kubernetes feature
     pub lease_duration_secs: u32,
-    /// Grace period for lease renewal in seconds. Must be less than lease_duration.
+    /// Grace period for lease renewal in seconds. Must be less than `lease_duration`.
     #[serde(default = "default_grace_period")]
     #[allow(dead_code)] // Used by kubernetes feature
     pub grace_period_secs: u32,
@@ -228,11 +228,11 @@ pub struct ClusterConfig {
     pub labels: HashMap<String, String>,
 }
 
-fn default_poll_interval() -> Duration {
+const fn default_poll_interval() -> Duration {
     Duration::from_secs(30)
 }
 
-fn default_http_port() -> u16 {
+const fn default_http_port() -> u16 {
     8000
 }
 
@@ -240,83 +240,83 @@ fn default_http_host() -> String {
     "0.0.0.0".to_string()
 }
 
-fn default_granularity() -> Granularity {
+const fn default_granularity() -> Granularity {
     Granularity::Topic
 }
 
-fn default_true() -> bool {
+const fn default_true() -> bool {
     true
 }
 
-fn default_cache_ttl() -> Duration {
-    Duration::from_secs(60)
+const fn default_cache_ttl() -> Duration {
+    Duration::from_mins(1)
 }
 
-fn default_max_concurrent_fetches() -> usize {
+const fn default_max_concurrent_fetches() -> usize {
     5
 }
 
-fn default_timestamp_sampling_mode() -> TimestampSamplingMode {
+const fn default_timestamp_sampling_mode() -> TimestampSamplingMode {
     TimestampSamplingMode::Rate
 }
 
-fn default_rate_history_samples() -> usize {
+const fn default_rate_history_samples() -> usize {
     5
 }
 
-fn default_rate_history_max_age() -> Duration {
-    Duration::from_secs(600)
+const fn default_rate_history_max_age() -> Duration {
+    Duration::from_mins(10)
 }
 
-fn default_rate_min_msgs_per_sec() -> f64 {
+const fn default_rate_min_msgs_per_sec() -> f64 {
     0.01
 }
 
-fn default_kafka_timeout() -> Duration {
+const fn default_kafka_timeout() -> Duration {
     Duration::from_secs(30)
 }
 
-fn default_offset_fetch_timeout() -> Duration {
+const fn default_offset_fetch_timeout() -> Duration {
     Duration::from_secs(10)
 }
 
-fn default_max_concurrent_groups() -> usize {
+const fn default_max_concurrent_groups() -> usize {
     10
 }
 
-fn default_max_concurrent_watermarks() -> usize {
+const fn default_max_concurrent_watermarks() -> usize {
     50
 }
 
-fn default_client_recycle_interval() -> u64 {
+const fn default_client_recycle_interval() -> u64 {
     50
 }
 
-fn default_max_blocking_threads() -> usize {
+const fn default_max_blocking_threads() -> usize {
     64
 }
 
-fn default_compacted_topics_cache_ttl() -> Duration {
-    Duration::from_secs(3600)
+const fn default_compacted_topics_cache_ttl() -> Duration {
+    Duration::from_hours(1)
 }
 
-fn default_metadata_cache_ttl() -> Duration {
-    Duration::from_secs(300)
+const fn default_metadata_cache_ttl() -> Duration {
+    Duration::from_mins(5)
 }
 
-fn default_consumer_groups_cache_ttl() -> Duration {
-    Duration::from_secs(60)
+const fn default_consumer_groups_cache_ttl() -> Duration {
+    Duration::from_mins(1)
 }
 
 fn default_otel_endpoint() -> String {
     "http://localhost:4317".to_string()
 }
 
-fn default_export_interval() -> Duration {
-    Duration::from_secs(60)
+const fn default_export_interval() -> Duration {
+    Duration::from_mins(1)
 }
 
-fn default_leadership_provider() -> LeadershipProvider {
+const fn default_leadership_provider() -> LeadershipProvider {
     LeadershipProvider::Kubernetes
 }
 
@@ -328,11 +328,11 @@ fn default_lease_namespace() -> String {
     "default".to_string()
 }
 
-fn default_lease_duration() -> u32 {
+const fn default_lease_duration() -> u32 {
     15
 }
 
-fn default_grace_period() -> u32 {
+const fn default_grace_period() -> u32 {
     5
 }
 
@@ -399,21 +399,20 @@ impl Default for PerformanceConfig {
 }
 
 impl Config {
-    pub fn load(path: Option<&str>) -> Result<Config> {
+    pub fn load(path: Option<&str>) -> Result<Self> {
         let config_path = path.unwrap_or("config.toml");
 
         if !Path::new(config_path).exists() {
             return Err(KlagError::Config(format!(
-                "Configuration file not found: {}",
-                config_path
+                "Configuration file not found: {config_path}"
             )));
         }
 
         let content = std::fs::read_to_string(config_path)?;
         let content = Self::substitute_env_vars(&content);
 
-        let config: Config = toml::from_str(&content)
-            .map_err(|e| KlagError::Config(format!("TOML parse error: {}", e)))?;
+        let config: Self = toml::from_str(&content)
+            .map_err(|e| KlagError::Config(format!("TOML parse error: {e}")))?;
 
         config.validate()?;
         Ok(config)
@@ -427,7 +426,7 @@ impl Config {
         let re = Regex::new(r"\$\{\??([^}:-]+)(?::-([^}]*))?\}").unwrap();
         re.replace_all(content, |caps: &regex::Captures| {
             let var_name = &caps[1];
-            let default_value = caps.get(2).map(|m| m.as_str()).unwrap_or("");
+            let default_value = caps.get(2).map_or("", |m| m.as_str());
             std::env::var(var_name).unwrap_or_else(|_| default_value.to_string())
         })
         .to_string()

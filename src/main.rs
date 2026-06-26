@@ -142,18 +142,17 @@ async fn async_main(config: Config) -> anyhow::Result<()> {
         let leadership = leadership_status.clone();
 
         let handle = tokio::spawn(async move {
-            let manager =
-                match ClusterManager::new(cluster_config.clone(), registry, &exporter_config) {
-                    Ok(m) => m,
-                    Err(e) => {
-                        error!(
-                            cluster = cluster_config.name,
-                            error = %e,
-                            "Failed to create cluster manager"
-                        );
-                        return;
-                    }
-                };
+            let manager = match ClusterManager::new(&cluster_config, registry, &exporter_config) {
+                Ok(m) => m,
+                Err(e) => {
+                    error!(
+                        cluster = cluster_config.name,
+                        error = %e,
+                        "Failed to create cluster manager"
+                    );
+                    return;
+                }
+            };
 
             manager.run(shutdown_rx, leadership).await;
         });
@@ -209,9 +208,10 @@ async fn async_main(config: Config) -> anyhow::Result<()> {
         futures::future::join_all(handles),
     );
 
-    match shutdown_timeout.await {
-        Ok(_) => info!("All cluster managers stopped"),
-        Err(_) => error!("Timeout waiting for cluster managers to stop"),
+    if shutdown_timeout.await.is_ok() {
+        info!("All cluster managers stopped");
+    } else {
+        error!("Timeout waiting for cluster managers to stop");
     }
 
     // Stop leadership provider
@@ -291,7 +291,7 @@ async fn shutdown_signal() {
     let terminate = std::future::pending::<()>();
 
     tokio::select! {
-        _ = ctrl_c => {},
-        _ = terminate => {},
+        () = ctrl_c => {},
+        () = terminate => {},
     }
 }

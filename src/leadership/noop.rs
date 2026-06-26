@@ -12,7 +12,7 @@ use crate::error::Result;
 pub struct NoopLeader;
 
 impl NoopLeader {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self
     }
 }
