@@ -2,3 +2,6 @@
 .claude
 .idea/
 CLAUDE.md
+.direnv/
+result
+.env.*

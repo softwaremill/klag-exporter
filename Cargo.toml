@@ -11,7 +11,7 @@ documentation = "https://docs.rs/klag-exporter"
 readme = "README.md"
 keywords = ["kafka", "prometheus", "metrics", "lag", "exporter"]
 categories = ["development-tools::profiling"]
-exclude = ["test-stack/", "docs/", ".github/", ".claude/"]
+exclude = ["test-stack/", "docs/", ".github/", ".claude/", "flake.*", ".envrc"]
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }
