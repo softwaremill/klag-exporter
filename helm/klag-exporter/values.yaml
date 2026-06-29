@@ -235,6 +235,8 @@ affinity: {}
 
 serviceMonitor:
   enabled: false
+  # Additional labels for the serviceMonitor metadata
+  additionalLabels: {}
   # Additional config for endpoint
   additionalEndpointConfig: {}
   # Additional config for serviceMonitor spec
