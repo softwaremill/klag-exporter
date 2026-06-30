@@ -4,10 +4,9 @@ kind: ServiceMonitor
 metadata:
   name: {{ include "klag-exporter.fullname" . }}
   labels:
-    {{- include "klag-exporter.labels" . | nindent 4 }}
-    {{- with .Values.serviceMonitor.additionalLabels }}
-    {{- toYaml . | nindent 4 }}
-    {{- end }}
+    {{- $baseLabels := include "klag-exporter.labels" . | fromYaml }}
+    {{- $extraLabels := .Values.serviceMonitor.additionalLabels | default dict }}
+    {{- toYaml (merge $baseLabels $extraLabels) | nindent 4 }}
 spec:
   selector:
     matchLabels:
