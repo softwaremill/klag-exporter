@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.25](https://github.com/softwaremill/klag-exporter/compare/v0.1.24...v0.1.25) - 2026-07-03
+
+### Added
+
+- *(helm)* add serviceMonitor.additionalLabels
+
+### Other
+
+- Merge labels to avoid duplication
+
 ## [0.1.24](https://github.com/softwaremill/klag-exporter/compare/v0.1.23...v0.1.24) - 2026-06-02
 
 ### Fixed
