@@ -303,6 +303,7 @@ impl ClusterManager {
             now_ms,
             poll_time_ms,
             &snapshot.compacted_topics,
+            self.timestamp_sampler.is_some(),
         );
 
         // Update registry with granularity and custom labels

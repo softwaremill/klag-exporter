@@ -107,6 +107,7 @@ impl LagCalculator {
         now_ms: i64,
         poll_time_ms: u64,
         compacted_topics: &HashSet<String>,
+        time_lag_enabled: bool,
     ) -> LagMetrics {
         let mut partition_metrics = Vec::new();
         let mut group_metrics = Vec::new();
@@ -128,7 +129,8 @@ impl LagCalculator {
         // Process each consumer group
         for group in &snapshot.groups {
             let mut group_max_lag: i64 = 0;
-            let mut group_max_lag_seconds: Option<f64> = Some(0.0); // Always emit, default to 0
+            let mut group_max_lag_seconds: Option<f64> =
+                if time_lag_enabled { Some(0.0) } else { None };
             let mut group_sum_lag: i64 = 0;
             let mut topic_lags: HashMap<String, i64> = HashMap::new();
 
@@ -171,7 +173,9 @@ impl LagCalculator {
 
                 // Calculate time lag if timestamp available
                 let ts_data = timestamps.get(&(group.group_id.clone(), tp.clone()));
-                let lag_seconds = if lag > 0 {
+                let lag_seconds = if !time_lag_enabled {
+                    None
+                } else if lag > 0 {
                     ts_data
                         .map(|td| ((now_ms - td.timestamp_ms) as f64) / 1000.0)
                         .map(|s| s.max(0.0))
@@ -352,7 +356,7 @@ mod tests {
         let now_ms = 1000000;
 
         let metrics =
-            LagCalculator::calculate(&snapshot, &timestamps, now_ms, 100, &HashSet::new());
+            LagCalculator::calculate(&snapshot, &timestamps, now_ms, 100, &HashSet::new(), true);
 
         // topic1 partition 0: 100 - 90 = 10
         // topic1 partition 1: 200 - 150 = 50
@@ -393,7 +397,7 @@ mod tests {
 
         let now_ms = 1000000;
         let metrics =
-            LagCalculator::calculate(&snapshot, &timestamps, now_ms, 100, &HashSet::new());
+            LagCalculator::calculate(&snapshot, &timestamps, now_ms, 100, &HashSet::new(), true);
 
         let p0 = metrics
             .partition_metrics
@@ -403,6 +407,35 @@ mod tests {
 
         assert_eq!(p0.lag_seconds, Some(100.0));
         assert!(!p0.compaction_detected);
+    }
+
+    #[test]
+    fn disabled_time_lag_omits_all_lag_seconds() {
+        // timestamp_sampling.enabled = false ⇒ seconds-of-lag is never
+        // derived. Every partition (caught-up AND lagging) and every group
+        // must carry `None` so the `*_lag_seconds` families are omitted
+        // rather than emitted as a misleading `0`. make_snapshot() has both
+        // lagging (topic1) and caught-up (topic2/0) partitions.
+        let snapshot = make_snapshot();
+        let metrics =
+            LagCalculator::calculate(&snapshot, &HashMap::new(), 0, 100, &HashSet::new(), false);
+
+        assert!(
+            metrics
+                .partition_metrics
+                .iter()
+                .all(|m| m.lag_seconds.is_none()),
+            "no partition may expose lag_seconds when time-lag sampling is disabled"
+        );
+        assert!(
+            metrics
+                .group_metrics
+                .iter()
+                .all(|m| m.max_lag_seconds.is_none()),
+            "no group may expose max_lag_seconds when time-lag sampling is disabled"
+        );
+        // Offset-lag itself is unaffected — it does not depend on sampling.
+        assert!(metrics.partition_metrics.iter().any(|m| m.lag > 0));
     }
 
     #[test]
@@ -427,7 +460,8 @@ mod tests {
             timestamp_ms: 0,
         };
 
-        let metrics = LagCalculator::calculate(&snapshot, &HashMap::new(), 0, 100, &HashSet::new());
+        let metrics =
+            LagCalculator::calculate(&snapshot, &HashMap::new(), 0, 100, &HashSet::new(), true);
 
         let p0 = metrics
             .partition_metrics
@@ -442,7 +476,8 @@ mod tests {
     #[test]
     fn test_lag_calculator_max_lag_aggregation() {
         let snapshot = make_snapshot();
-        let metrics = LagCalculator::calculate(&snapshot, &HashMap::new(), 0, 100, &HashSet::new());
+        let metrics =
+            LagCalculator::calculate(&snapshot, &HashMap::new(), 0, 100, &HashSet::new(), true);
 
         let group_metric = metrics
             .group_metrics
@@ -457,7 +492,8 @@ mod tests {
     #[test]
     fn test_lag_calculator_sum_lag_aggregation() {
         let snapshot = make_snapshot();
-        let metrics = LagCalculator::calculate(&snapshot, &HashMap::new(), 0, 100, &HashSet::new());
+        let metrics =
+            LagCalculator::calculate(&snapshot, &HashMap::new(), 0, 100, &HashSet::new(), true);
 
         let group_metric = metrics
             .group_metrics
@@ -472,7 +508,8 @@ mod tests {
     #[test]
     fn test_topic_sum_lag() {
         let snapshot = make_snapshot();
-        let metrics = LagCalculator::calculate(&snapshot, &HashMap::new(), 0, 100, &HashSet::new());
+        let metrics =
+            LagCalculator::calculate(&snapshot, &HashMap::new(), 0, 100, &HashSet::new(), true);
 
         let topic1_metric = metrics
             .topic_metrics
@@ -509,7 +546,8 @@ mod tests {
     #[test]
     fn test_lag_calculator_group_state() {
         let snapshot = make_snapshot();
-        let metrics = LagCalculator::calculate(&snapshot, &HashMap::new(), 0, 100, &HashSet::new());
+        let metrics =
+            LagCalculator::calculate(&snapshot, &HashMap::new(), 0, 100, &HashSet::new(), true);
 
         let group_metric = metrics
             .group_metrics
@@ -523,7 +561,8 @@ mod tests {
     #[test]
     fn test_partition_offset_metrics() {
         let snapshot = make_snapshot();
-        let metrics = LagCalculator::calculate(&snapshot, &HashMap::new(), 0, 100, &HashSet::new());
+        let metrics =
+            LagCalculator::calculate(&snapshot, &HashMap::new(), 0, 100, &HashSet::new(), true);
 
         assert_eq!(metrics.partition_offsets.len(), 3);
 
