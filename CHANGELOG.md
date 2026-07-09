@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.26](https://github.com/softwaremill/klag-exporter/compare/v0.1.25...v0.1.26) - 2026-07-09
+
+### Other
+
+- add nix tooling for reproducible builds
+
 ## [0.1.25](https://github.com/softwaremill/klag-exporter/compare/v0.1.24...v0.1.25) - 2026-07-03
 
 ### Added
