@@ -71,7 +71,7 @@ pub struct KafkaClient {
 }
 
 impl KafkaClient {
-    /// Create a new KafkaClient with default performance config.
+    /// Create a new `KafkaClient` with default performance config.
     /// Prefer `with_performance` for large clusters.
     #[allow(dead_code)]
     pub fn new(config: &ClusterConfig) -> Result<Self> {
@@ -94,7 +94,7 @@ impl KafkaClient {
         })
     }
 
-    /// Create fresh AdminClient + BaseConsumer pair.
+    /// Create fresh `AdminClient` + `BaseConsumer` pair.
     fn create_clients(
         config: &ClusterConfig,
     ) -> Result<(AdminClient<DefaultClientContext>, BaseConsumer)> {
@@ -129,10 +129,15 @@ impl KafkaClient {
 
     /// Get a snapshot of the current admin client (cheap Arc clone).
     fn admin(&self) -> Arc<AdminClient<DefaultClientContext>> {
-        Arc::clone(&self.admin.lock().unwrap_or_else(|p| p.into_inner()))
+        Arc::clone(
+            &self
+                .admin
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
     }
 
-    /// Public accessor for the underlying AdminClient Arc. Used by batched
+    /// Public accessor for the underlying `AdminClient` Arc. Used by batched
     /// Admin API wrappers in `kafka::admin` and by integration tests. The
     /// caller holds the Arc for the duration of the FFI call to keep the
     /// native handle valid.
@@ -142,7 +147,12 @@ impl KafkaClient {
 
     /// Get a snapshot of the current consumer (cheap Arc clone).
     fn consumer(&self) -> Arc<BaseConsumer> {
-        Arc::clone(&self.consumer.lock().unwrap_or_else(|p| p.into_inner()))
+        Arc::clone(
+            &self
+                .consumer
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
     }
 
     /// Recycle internal Kafka clients to release accumulated librdkafka metadata.
@@ -154,22 +164,28 @@ impl KafkaClient {
         let rss_before = get_rss_kb();
         let (new_admin, new_consumer) = Self::create_clients(&self.config)?;
 
-        *self.admin.lock().unwrap_or_else(|p| p.into_inner()) = Arc::new(new_admin);
-        *self.consumer.lock().unwrap_or_else(|p| p.into_inner()) = Arc::new(new_consumer);
+        *self
+            .admin
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Arc::new(new_admin);
+        *self
+            .consumer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Arc::new(new_consumer);
 
         let rss_after = get_rss_kb();
         info!(
             cluster = %self.config.name,
             rss_before_kb = rss_before,
             rss_after_kb = rss_after,
-            rss_reclaimed_kb = rss_before as i64 - rss_after as i64,
+            rss_reclaimed_kb = rss_before.cast_signed() - rss_after.cast_signed(),
             "Recycled Kafka clients"
         );
         Ok(())
     }
 
     #[allow(dead_code)]
-    pub fn performance(&self) -> &PerformanceConfig {
+    pub const fn performance(&self) -> &PerformanceConfig {
         &self.performance
     }
 
@@ -258,7 +274,7 @@ impl KafkaClient {
     }
 
     /// Fetch low + high watermarks for an explicit partition set via batched
-    /// ListOffsets. Two Admin API calls total (EARLIEST + LATEST), regardless
+    /// `ListOffsets`. Two Admin API calls total (EARLIEST + LATEST), regardless
     /// of partition count. Replaces the prior per-partition `fetch_watermarks`
     /// fan-out (O(partitions) blocking calls via a semaphore).
     ///
@@ -286,16 +302,15 @@ impl KafkaClient {
             // flags `committed_offset < low_watermark`) while still surfacing
             // valid lag numbers. A 0 default would misrepresent the earliest
             // retained offset on compacted or retention-trimmed topics.
-            let low = match lows.get(&tp).copied() {
-                Some(l) => l,
-                None => {
-                    warn!(
-                        topic = %tp.topic,
-                        partition = tp.partition,
-                        "EARLIEST watermark missing; using LATEST as conservative fallback"
-                    );
-                    high
-                }
+            let low = if let Some(l) = lows.get(&tp).copied() {
+                l
+            } else {
+                warn!(
+                    topic = %tp.topic,
+                    partition = tp.partition,
+                    "EARLIEST watermark missing; using LATEST as conservative fallback"
+                );
+                high
             };
             merged.insert(tp, (low, high));
         }
@@ -374,13 +389,12 @@ impl KafkaClient {
 }
 
 /// Read current process RSS in kilobytes. Returns 0 on failure or non-Linux.
-/// Assumes 4 KB page size (standard for x86_64 Linux where /proc/self/statm exists).
+/// Assumes 4 KB page size (standard for `x86_64` Linux where /proc/self/statm exists).
 fn get_rss_kb() -> u64 {
     std::fs::read_to_string("/proc/self/statm")
         .ok()
         .and_then(|s| s.split_whitespace().nth(1)?.parse::<u64>().ok())
-        .map(|pages| pages * 4)
-        .unwrap_or(0)
+        .map_or(0, |pages| pages * 4)
 }
 
 impl std::fmt::Debug for KafkaClient {

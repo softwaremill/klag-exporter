@@ -6,7 +6,7 @@ pub struct PrometheusExporter {
 }
 
 impl PrometheusExporter {
-    pub fn new(registry: Arc<MetricsRegistry>) -> Self {
+    pub const fn new(registry: Arc<MetricsRegistry>) -> Self {
         Self { registry }
     }
 
@@ -79,7 +79,7 @@ mod tests {
             data_loss_partition_count: 0,
         };
 
-        registry.update("test", metrics);
+        registry.update("test", &metrics);
 
         let exporter = PrometheusExporter::new(registry);
         let output = exporter.render_metrics();

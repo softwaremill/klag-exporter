@@ -13,8 +13,8 @@ use std::time::{Duration, Instant};
 use tokio::sync::broadcast;
 use tracing::{debug, error, info, instrument, warn};
 
-/// Default timeout for a single collection cycle (should be less than poll_interval)
-const DEFAULT_COLLECTION_TIMEOUT: Duration = Duration::from_secs(60);
+/// Default timeout for a single collection cycle (should be less than `poll_interval`)
+const DEFAULT_COLLECTION_TIMEOUT: Duration = Duration::from_mins(1);
 
 pub struct ClusterManager {
     cluster_name: String,
@@ -34,7 +34,7 @@ pub struct ClusterManager {
 
 impl ClusterManager {
     pub fn new(
-        config: ClusterConfig,
+        config: &ClusterConfig,
         registry: Arc<MetricsRegistry>,
         exporter_config: &ExporterConfig,
     ) -> Result<Self> {
@@ -43,11 +43,11 @@ impl ClusterManager {
         let filters = config.compile_filters()?;
         let performance = exporter_config.performance.clone();
 
-        let client = Arc::new(KafkaClient::with_performance(&config, performance.clone())?);
+        let client = Arc::new(KafkaClient::with_performance(config, performance.clone())?);
         let offset_collector = OffsetCollector::with_performance(
             Arc::clone(&client),
             filters,
-            performance.clone(),
+            performance,
             exporter_config.granularity,
         );
 
@@ -59,7 +59,7 @@ impl ClusterManager {
                     // the Tier-3 resident-memory saving for rate-mode users:
                     // no BaseConsumer pool, no extra librdkafka clients.
                     let ts_consumer =
-                        TimestampConsumer::with_pool_size(&config, ts_cfg.max_concurrent_fetches)?;
+                        TimestampConsumer::with_pool_size(config, ts_cfg.max_concurrent_fetches)?;
                     TimestampSampler::new_message(ts_consumer, ts_cfg.cache_ttl)
                 }
                 crate::config::TimestampSamplingMode::Rate => {
@@ -101,7 +101,7 @@ impl ClusterManager {
             timestamp_sampler,
             registry,
             poll_interval: exporter_config.poll_interval,
-            max_backoff: Duration::from_secs(300),
+            max_backoff: Duration::from_mins(5),
             granularity: exporter_config.granularity,
             max_concurrent_fetches: exporter_config.timestamp_sampling.max_concurrent_fetches,
             cache_cleanup_interval: exporter_config.timestamp_sampling.cache_ttl * 2,
@@ -303,12 +303,13 @@ impl ClusterManager {
             now_ms,
             poll_time_ms,
             &snapshot.compacted_topics,
+            self.timestamp_sampler.is_some(),
         );
 
         // Update registry with granularity and custom labels
         self.registry.update_with_options(
             &self.cluster_name,
-            lag_metrics,
+            &lag_metrics,
             self.granularity,
             &self.cluster_labels,
         );
@@ -320,7 +321,7 @@ impl ClusterManager {
         debug!(
             cluster = %self.cluster_name,
             elapsed_ms = scrape_duration_ms,
-            timestamp_cache_size = self.timestamp_sampler.as_ref().map(|s| s.cache_size()).unwrap_or(0),
+            timestamp_cache_size = self.timestamp_sampler.as_ref().map_or(0, super::super::collector::timestamp_sampler::TimestampSampler::cache_size),
             "Collection cycle completed"
         );
 

@@ -41,7 +41,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y cmake build-essential libssl-dev libsasl2-dev zlib1g-dev libzstd-dev liblz4-dev pkg-config libcurl4-openssl-dev
 
-      - uses: dtolnay/rust-toolchain@1.93
+      - uses: dtolnay/rust-toolchain@1.96
         with:
           targets: ${{ matrix.target }}
 

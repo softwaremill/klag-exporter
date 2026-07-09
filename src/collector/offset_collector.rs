@@ -13,7 +13,7 @@ use tracing::{debug, instrument, warn};
 /// caching it with a long TTL saves a per-cycle `DescribeConfigs` over the
 /// monitored topic set. On each cycle the collector asks the cache which
 /// topics still need to be queried fresh, then merges the cached-true
-/// entries with whatever DescribeConfigs returns.
+/// entries with whatever `DescribeConfigs` returns.
 struct CompactedTopicsCache {
     ttl: Duration,
     // (is_compacted, fetched_at). Mutex is fine — accessed only from
@@ -31,10 +31,13 @@ impl CompactedTopicsCache {
 
     /// Split `monitored_topics` into:
     ///   - `cached_compacted` — topics the cache says are compacted (fresh)
-    ///   - `to_fetch` — topics with no fresh cache entry (need DescribeConfigs)
+    ///   - `to_fetch` — topics with no fresh cache entry (need `DescribeConfigs`)
     fn partition<'a>(&self, monitored_topics: &'a [String]) -> (HashSet<String>, Vec<&'a str>) {
         let now = Instant::now();
-        let entries = self.entries.lock().unwrap_or_else(|p| p.into_inner());
+        let entries = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
 
         let mut cached_compacted = HashSet::new();
         let mut to_fetch: Vec<&str> = Vec::new();
@@ -55,7 +58,10 @@ impl CompactedTopicsCache {
     /// in `fetched_topics`, record whether it appeared in `compacted_result`.
     fn update(&self, fetched_topics: &[&str], compacted_result: &HashSet<String>) {
         let now = Instant::now();
-        let mut entries = self.entries.lock().unwrap_or_else(|p| p.into_inner());
+        let mut entries = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         for topic in fetched_topics {
             let is_compacted = compacted_result.contains(*topic);
             entries.insert((*topic).to_string(), (is_compacted, now));
@@ -64,8 +70,14 @@ impl CompactedTopicsCache {
 
     /// Drop cache entries for topics no longer being monitored.
     fn prune_to(&self, monitored_topics: &[String]) {
-        let keep: HashSet<&str> = monitored_topics.iter().map(|s| s.as_str()).collect();
-        let mut entries = self.entries.lock().unwrap_or_else(|p| p.into_inner());
+        let keep: HashSet<&str> = monitored_topics
+            .iter()
+            .map(std::string::String::as_str)
+            .collect();
+        let mut entries = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         entries.retain(|k, _| keep.contains(k.as_str()));
     }
 }
@@ -84,7 +96,7 @@ struct MetadataCache {
 }
 
 impl MetadataCache {
-    fn new(ttl: Duration) -> Self {
+    const fn new(ttl: Duration) -> Self {
         Self {
             ttl,
             entry: Mutex::new(None),
@@ -95,7 +107,10 @@ impl MetadataCache {
         if self.ttl.is_zero() {
             return None;
         }
-        let guard = self.entry.lock().unwrap_or_else(|p| p.into_inner());
+        let guard = self
+            .entry
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let (set, at) = guard.as_ref()?;
         if at.elapsed() < self.ttl {
             Some((Arc::clone(&set.0), Arc::clone(&set.1)))
@@ -111,7 +126,10 @@ impl MetadataCache {
     fn set(&self, partitions: Vec<TopicPartition>, topics: Vec<String>) -> MonitoredSet {
         let set: MonitoredSet = (Arc::new(partitions), Arc::new(topics));
         if !self.ttl.is_zero() {
-            let mut guard = self.entry.lock().unwrap_or_else(|p| p.into_inner());
+            let mut guard = self
+                .entry
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             *guard = Some(((Arc::clone(&set.0), Arc::clone(&set.1)), Instant::now()));
         }
         set
@@ -129,7 +147,7 @@ struct ConsumerGroupsCache {
 }
 
 impl ConsumerGroupsCache {
-    fn new(ttl: Duration) -> Self {
+    const fn new(ttl: Duration) -> Self {
         Self {
             ttl,
             entry: Mutex::new(None),
@@ -140,7 +158,10 @@ impl ConsumerGroupsCache {
         if self.ttl.is_zero() {
             return None;
         }
-        let guard = self.entry.lock().unwrap_or_else(|p| p.into_inner());
+        let guard = self
+            .entry
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let (groups, at) = guard.as_ref()?;
         if at.elapsed() < self.ttl {
             Some(Arc::clone(groups))
@@ -152,7 +173,10 @@ impl ConsumerGroupsCache {
     fn set(&self, groups: Vec<ConsumerGroupInfo>) -> Arc<Vec<ConsumerGroupInfo>> {
         let arc = Arc::new(groups);
         if !self.ttl.is_zero() {
-            let mut guard = self.entry.lock().unwrap_or_else(|p| p.into_inner());
+            let mut guard = self
+                .entry
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             *guard = Some((Arc::clone(&arc), Instant::now()));
         }
         arc
@@ -190,7 +214,7 @@ pub struct OffsetsSnapshot {
     /// Topics configured with `cleanup.policy=compact`. Populated by
     /// `collect_parallel` for the monitored topic set. Used by the lag
     /// calculator to suppress data-loss warnings on compacted topics (where
-    /// low_watermark ahead of committed_offset is expected, not a loss).
+    /// `low_watermark` ahead of `committed_offset` is expected, not a loss).
     pub compacted_topics: HashSet<String>,
     #[allow(dead_code)]
     pub timestamp_ms: i64,
@@ -238,15 +262,15 @@ impl OffsetCollector {
     /// the watermark + compacted-topic-config path.
     ///
     /// Per-cycle RPC count:
-    ///   - 2 batched ListOffsets calls (EARLIEST + LATEST), routed per leader
+    ///   - 2 batched `ListOffsets` calls (EARLIEST + LATEST), routed per leader
     ///     broker internally — O(brokers) broker round trips regardless of
     ///     partition count.
-    ///   - `ceil(groups / 100)` batched DescribeConsumerGroups calls.
-    ///   - 1 ListConsumerGroupOffsets call per group (`PER_CALL_CHUNK = 1`
+    ///   - `ceil(groups / 100)` batched `DescribeConsumerGroups` calls.
+    ///   - 1 `ListConsumerGroupOffsets` call per group (`PER_CALL_CHUNK = 1`
     ///     in `fetch_all_group_offsets_batched` because librdkafka 2.12
     ///     rejects multi-group calls at the client layer; fanned out via
     ///     `max_concurrent_groups`).
-    ///   - 1 DescribeConfigs call restricted to monitored topics.
+    ///   - 1 `DescribeConfigs` call restricted to monitored topics.
     #[instrument(skip(self), fields(cluster = %self.client.cluster_name()))]
     pub async fn collect_parallel(&self) -> Result<OffsetsSnapshot> {
         let start = std::time::Instant::now();
@@ -350,13 +374,21 @@ impl OffsetCollector {
         // refresh new topics (or nothing at all in steady state).
         let phase_start = std::time::Instant::now();
         let (mut compacted_topics, to_fetch) = self.compacted_cache.partition(&monitored_topics);
-        if !to_fetch.is_empty() {
+        if to_fetch.is_empty() {
+            debug!(
+                cached = compacted_topics.len(),
+                "Compacted-topic cache fully hit — no DescribeConfigs RPC"
+            );
+        } else {
             debug!(
                 to_fetch = to_fetch.len(),
                 cached = compacted_topics.len(),
                 "Compacted-topic cache partial miss — refreshing"
             );
-            let to_fetch_owned: Vec<String> = to_fetch.iter().map(|s| s.to_string()).collect();
+            let to_fetch_owned: Vec<String> = to_fetch
+                .iter()
+                .map(std::string::ToString::to_string)
+                .collect();
             match self
                 .client
                 .fetch_compacted_topics_for(&to_fetch_owned)
@@ -368,11 +400,6 @@ impl OffsetCollector {
                 }
                 Err(e) => warn!(error = %e, "Failed to refresh compacted topics"),
             }
-        } else {
-            debug!(
-                cached = compacted_topics.len(),
-                "Compacted-topic cache fully hit — no DescribeConfigs RPC"
-            );
         }
         // Drop cache entries for topics no longer monitored (filter change,
         // topic deletion) so memory doesn't grow unboundedly.
@@ -472,9 +499,9 @@ impl OffsetCollector {
     /// Fetch offsets for all groups via batched Admin API.
     ///
     /// librdkafka 2.12's `rd_kafka_ListConsumerGroupOffsets` rejects calls with
-    /// more than one group per call ("Exactly one ListConsumerGroupOffsets must
+    /// more than one group per call ("Exactly one `ListConsumerGroupOffsets` must
     /// be passed") even though the Kafka protocol supports multi-group
-    /// ListOffsetFetch (KIP-709). We therefore issue one FFI call per group,
+    /// `ListOffsetFetch` (KIP-709). We therefore issue one FFI call per group,
     /// fanned out with bounded concurrency via `max_concurrent_groups`.
     ///
     /// The win vs. the prior path is not "multi-group in one call" but:
@@ -543,10 +570,10 @@ impl OffsetCollector {
             match r {
                 Ok((_gid, Ok(Ok(map)))) => merged.extend(map),
                 Ok((gid, Ok(Err(e)))) => {
-                    warn!(group = %gid, error = %e, "Group-offset call failed")
+                    warn!(group = %gid, error = %e, "Group-offset call failed");
                 }
                 Ok((gid, Err(e))) => {
-                    warn!(group = %gid, error = %e, "Group-offset call task panicked")
+                    warn!(group = %gid, error = %e, "Group-offset call task panicked");
                 }
                 Err(e) => warn!(error = %e, "Group-offset join error"),
             }

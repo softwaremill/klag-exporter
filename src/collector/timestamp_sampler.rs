@@ -3,7 +3,7 @@
 //! Two modes:
 //!
 //! 1. **`Message`** — read the actual message at the committed offset via a
-//!    pooled BaseConsumer and use its produce timestamp. Exact, but the
+//!    pooled `BaseConsumer` and use its produce timestamp. Exact, but the
 //!    pool is a heavyweight native-memory consumer on large clusters
 //!    (each `BaseConsumer` is a full librdkafka client with its own
 //!    metadata cache and background threads).
@@ -203,8 +203,7 @@ fn compute_time_lags_rate(
         for (tp, committed_offset) in &group.offsets {
             let high = snapshot
                 .get_watermark(tp)
-                .map(|(_, h)| h)
-                .unwrap_or(*committed_offset);
+                .map_or(*committed_offset, |(_, h)| h);
             let lag = high - *committed_offset;
             if lag <= 0 {
                 // 0 lag → 0 seconds. Downstream builds Some(0.0) naturally;
@@ -245,8 +244,7 @@ async fn compute_time_lags_message(
         for (tp, committed_offset) in &group.offsets {
             let high = snapshot
                 .get_watermark(tp)
-                .map(|(_, h)| h)
-                .unwrap_or(*committed_offset);
+                .map_or(*committed_offset, |(_, h)| h);
             if high - *committed_offset > 0 {
                 requests.push((group.group_id.clone(), tp.clone(), *committed_offset));
             }

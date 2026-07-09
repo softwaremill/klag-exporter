@@ -13,7 +13,31 @@
 use crate::error::{KlagError, Result};
 use crate::kafka::client::TopicPartition;
 use rdkafka::admin::AdminClient;
-use rdkafka::bindings::*;
+use rdkafka::bindings::{
+    rd_kafka_AdminOptions_destroy, rd_kafka_AdminOptions_new,
+    rd_kafka_AdminOptions_set_request_timeout, rd_kafka_AdminOptions_t,
+    rd_kafka_ConsumerGroupDescription_error, rd_kafka_ConsumerGroupDescription_group_id,
+    rd_kafka_ConsumerGroupDescription_member, rd_kafka_ConsumerGroupDescription_member_count,
+    rd_kafka_ConsumerGroupDescription_state, rd_kafka_DescribeConsumerGroups,
+    rd_kafka_DescribeConsumerGroups_result_groups, rd_kafka_ListConsumerGroupOffsets,
+    rd_kafka_ListConsumerGroupOffsets_destroy, rd_kafka_ListConsumerGroupOffsets_new,
+    rd_kafka_ListConsumerGroupOffsets_result_groups, rd_kafka_ListConsumerGroupOffsets_t,
+    rd_kafka_ListOffsets, rd_kafka_ListOffsetsResultInfo_topic_partition,
+    rd_kafka_ListOffsets_result_infos, rd_kafka_MemberAssignment_partitions,
+    rd_kafka_MemberDescription_assignment, rd_kafka_MemberDescription_client_id,
+    rd_kafka_MemberDescription_consumer_id, rd_kafka_MemberDescription_host, rd_kafka_OffsetSpec_t,
+    rd_kafka_admin_op_t, rd_kafka_consumer_group_state_name, rd_kafka_err2name,
+    rd_kafka_error_code, rd_kafka_error_string, rd_kafka_event_DescribeConsumerGroups_result,
+    rd_kafka_event_ListConsumerGroupOffsets_result, rd_kafka_event_ListOffsets_result,
+    rd_kafka_event_destroy, rd_kafka_event_error, rd_kafka_event_error_string, rd_kafka_event_t,
+    rd_kafka_event_type, rd_kafka_group_result_error, rd_kafka_group_result_name,
+    rd_kafka_group_result_partitions, rd_kafka_queue_destroy, rd_kafka_queue_new,
+    rd_kafka_queue_poll, rd_kafka_queue_t, rd_kafka_resp_err_t, rd_kafka_t,
+    rd_kafka_topic_partition_list_add, rd_kafka_topic_partition_list_destroy,
+    rd_kafka_topic_partition_list_new, rd_kafka_topic_partition_list_t,
+    RD_KAFKA_EVENT_DESCRIBECONSUMERGROUPS_RESULT, RD_KAFKA_EVENT_LISTCONSUMERGROUPOFFSETS_RESULT,
+    RD_KAFKA_EVENT_LISTOFFSETS_RESULT,
+};
 use rdkafka::client::DefaultClientContext;
 use std::collections::HashMap;
 use std::ffi::{CStr, CString};
@@ -57,29 +81,29 @@ pub enum OffsetSpec {
 }
 
 impl OffsetSpec {
-    fn as_c_value(self) -> i64 {
+    const fn as_c_value(self) -> i64 {
         match self {
-            OffsetSpec::Earliest => rd_kafka_OffsetSpec_t::RD_KAFKA_OFFSET_SPEC_EARLIEST as i64,
-            OffsetSpec::Latest => rd_kafka_OffsetSpec_t::RD_KAFKA_OFFSET_SPEC_LATEST as i64,
+            Self::Earliest => rd_kafka_OffsetSpec_t::RD_KAFKA_OFFSET_SPEC_EARLIEST as i64,
+            Self::Latest => rd_kafka_OffsetSpec_t::RD_KAFKA_OFFSET_SPEC_LATEST as i64,
         }
     }
 }
 
 /// Copy the librdkafka errstr buffer out as a String.
-pub(crate) fn errstr_to_string(buf: &[c_char]) -> String {
+pub fn errstr_to_string(buf: &[c_char]) -> String {
     // SAFETY: librdkafka null-terminates; buf is a stack array owned by caller.
     unsafe { CStr::from_ptr(buf.as_ptr()).to_string_lossy().to_string() }
 }
 
-/// Build a C cstring from a Rust &str, returning a KlagError on embedded NULs.
-pub(crate) fn cstring_or_err(s: &str) -> Result<CString> {
+/// Build a C cstring from a Rust &str, returning a `KlagError` on embedded NULs.
+pub fn cstring_or_err(s: &str) -> Result<CString> {
     CString::new(s).map_err(|e| KlagError::Admin(format!("Invalid C string '{s}': {e}")))
 }
 
 /// Keep the admin client alive for the duration of an FFI call. This type is
 /// intentionally opaque: callers pass `&AdminClient` and we hold references
 /// that must not outlive it.
-pub(crate) fn admin_native_ptr(admin: &AdminClient<DefaultClientContext>) -> *mut rd_kafka_t {
+pub fn admin_native_ptr(admin: &AdminClient<DefaultClientContext>) -> *mut rd_kafka_t {
     admin.inner().native_ptr()
 }
 
@@ -108,7 +132,7 @@ pub fn list_offsets_batched(
         options: *mut rd_kafka_AdminOptions_t,
         queue: *mut rd_kafka_queue_t,
         event: *mut rd_kafka_event_t,
-        _topic_cstrings: Vec<CString>,
+        topic_cstrings: Vec<CString>,
     }
     impl Drop for Cleanup {
         fn drop(&mut self) {
@@ -143,14 +167,14 @@ pub fn list_offsets_batched(
             options: ptr::null_mut(),
             queue: ptr::null_mut(),
             event: ptr::null_mut(),
-            _topic_cstrings: Vec::with_capacity(partitions.len()),
+            topic_cstrings: Vec::with_capacity(partitions.len()),
         };
 
         let spec_value = spec.as_c_value();
         for tp in partitions {
             let topic_cstr = cstring_or_err(&tp.topic)?;
-            cleanup._topic_cstrings.push(topic_cstr);
-            let cstr_ptr = cleanup._topic_cstrings.last().unwrap().as_ptr();
+            cleanup.topic_cstrings.push(topic_cstr);
+            let cstr_ptr = cleanup.topic_cstrings.last().unwrap().as_ptr();
             let elem = rd_kafka_topic_partition_list_add(c_tpl, cstr_ptr, tp.partition);
             if elem.is_null() {
                 return Err(KlagError::Admin(
@@ -224,7 +248,7 @@ pub fn list_offsets_batched(
         }
 
         let mut n_infos: usize = 0;
-        let infos_ptr = rd_kafka_ListOffsets_result_infos(result, &mut n_infos);
+        let infos_ptr = rd_kafka_ListOffsets_result_infos(result, &raw mut n_infos);
         let mut out = HashMap::with_capacity(n_infos);
 
         if infos_ptr.is_null() || n_infos == 0 {
@@ -333,7 +357,7 @@ pub async fn describe_consumer_groups_batched(
     // borrowing from the caller's slice.
     let chunks: Vec<Vec<String>> = group_ids
         .chunks(chunk_size)
-        .map(|c| c.iter().map(|s| s.to_string()).collect())
+        .map(|c| c.iter().map(std::string::ToString::to_string).collect())
         .collect();
 
     // Each chunk carries enough identifying context to make partial-
@@ -363,7 +387,7 @@ pub async fn describe_consumer_groups_batched(
             let _permit: tokio::sync::OwnedSemaphorePermit =
                 permit.acquire_owned().await.expect("semaphore closed");
             let result = tokio::task::spawn_blocking(move || {
-                let refs: Vec<&str> = chunk.iter().map(|s| s.as_str()).collect();
+                let refs: Vec<&str> = chunk.iter().map(std::string::String::as_str).collect();
                 describe_consumer_groups_one_chunk(&admin, &refs, timeout, parse_assignments)
             })
             .await;
@@ -535,7 +559,7 @@ fn describe_consumer_groups_one_chunk(
         }
 
         let mut n: usize = 0;
-        let groups_ptr = rd_kafka_DescribeConsumerGroups_result_groups(result, &mut n);
+        let groups_ptr = rd_kafka_DescribeConsumerGroups_result_groups(result, &raw mut n);
         let mut out = Vec::with_capacity(n);
         if groups_ptr.is_null() || n == 0 {
             return Ok(out);
@@ -781,7 +805,7 @@ fn list_consumer_group_offsets_one_chunk(
         }
 
         let mut n_groups: usize = 0;
-        let groups_ptr = rd_kafka_ListConsumerGroupOffsets_result_groups(result, &mut n_groups);
+        let groups_ptr = rd_kafka_ListConsumerGroupOffsets_result_groups(result, &raw mut n_groups);
         let mut out: HashMap<String, HashMap<TopicPartition, i64>> =
             HashMap::with_capacity(n_groups);
         if groups_ptr.is_null() || n_groups == 0 {

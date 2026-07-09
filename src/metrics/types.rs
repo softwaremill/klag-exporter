@@ -7,10 +7,9 @@ pub enum MetricValue {
 }
 
 impl MetricValue {
-    pub fn as_f64(&self) -> f64 {
+    pub const fn as_f64(&self) -> f64 {
         match self {
-            MetricValue::Gauge(v) => *v,
-            MetricValue::Counter(v) => *v,
+            Self::Gauge(v) | Self::Counter(v) => *v,
         }
     }
 }
@@ -33,10 +32,10 @@ pub enum MetricType {
 }
 
 impl MetricType {
-    pub fn as_str(&self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
-            MetricType::Gauge => "gauge",
-            MetricType::Counter => "counter",
+            Self::Gauge => "gauge",
+            Self::Counter => "counter",
         }
     }
 }
@@ -84,5 +83,5 @@ pub struct OtelDataPoint {
     pub attributes: HashMap<String, String>,
     pub value: f64,
     #[allow(dead_code)]
-    pub timestamp_ms: i64,
+    pub timestamp_ms: u128,
 }
