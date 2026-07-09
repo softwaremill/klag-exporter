@@ -21,7 +21,7 @@
         inherit (pkgs) lib;
         cargoToml = lib.fromTOML (lib.readFile ./Cargo.toml);
 
-        rustToolchain = pkgs.rust-bin.stable."1.93.0".default.override {
+        rustToolchain = pkgs.rust-bin.stable."1.96.0".default.override {
           extensions = [
             "clippy"
             "rust-analyzer"
