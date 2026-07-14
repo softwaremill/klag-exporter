@@ -139,6 +139,7 @@ config:
     # Message-mode settings (ignored when mode = "rate"):
     # cache_ttl: "60s"
     # max_concurrent_fetches: 10
+    # fetch_timeout: "5s"
     # Rate-mode settings (ignored when mode = "message"):
     # rate_history_samples: 5
     # rate_history_max_age: "10m"
