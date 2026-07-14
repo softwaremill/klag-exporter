@@ -36,6 +36,10 @@ enabled = true
 # Message-mode settings (ignored when mode = "rate"):
 cache_ttl = "60s"
 max_concurrent_fetches = 5
+# Per-message poll timeout: how long each fetch waits for a message at the
+# committed offset before giving up. Bounds the per-fetch wait so an idle
+# partition or slow broker can't stall the collection cycle.
+fetch_timeout = "5s"
 
 # Rate-mode settings (ignored when mode = "message"):
 # rate_history_samples = 5       # watermark observations per partition

@@ -29,11 +29,15 @@ pub struct TimestampConsumer {
 }
 
 impl TimestampConsumer {
-    pub fn with_pool_size(config: &ClusterConfig, pool_size: usize) -> Result<Self> {
+    pub fn with_pool_size(
+        config: &ClusterConfig,
+        pool_size: usize,
+        fetch_timeout: Duration,
+    ) -> Result<Self> {
         let mut consumer = Self {
             config: config.clone(),
             cluster_name: config.name.clone(),
-            fetch_timeout: Duration::from_secs(5),
+            fetch_timeout,
             consumer_counter: AtomicU64::new(0),
             pool: Mutex::new(Vec::with_capacity(pool_size)),
             pool_size,
