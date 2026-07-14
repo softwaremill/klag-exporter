@@ -410,6 +410,56 @@ mod tests {
     }
 
     #[test]
+    fn data_loss_partition_without_timestamp_emits_zero_seconds() {
+        // A partition whose committed offset is below the low watermark is a
+        // data-loss partition. In message mode with skip_data_loss_partitions
+        // on, its fetch is skipped so no timestamp is produced. It must still
+        // emit exact offset lag and lag_seconds = 0 (not None, not inflated)
+        // with data_loss_detected set.
+        let mut watermarks = HashMap::new();
+        // low = 100, high = 500: retention has advanced past the committed offset.
+        watermarks.insert(TopicPartition::new("topic1", 0), (100, 500));
+        let mut offsets = HashMap::new();
+        offsets.insert(TopicPartition::new("topic1", 0), 40); // 40 < low(100)
+
+        let snapshot = OffsetsSnapshot {
+            cluster_name: "test-cluster".to_string(),
+            groups: vec![GroupSnapshot {
+                group_id: "test-group".to_string(),
+                state: "Stable".to_string(),
+                members: vec![],
+                offsets,
+            }],
+            watermarks,
+            compacted_topics: HashSet::new(),
+            timestamp_ms: 1_000_000,
+        };
+
+        // Empty timestamps: mirrors the fetch being skipped for this partition.
+        let metrics = LagCalculator::calculate(
+            &snapshot,
+            &HashMap::new(),
+            1_000_000,
+            100,
+            &HashSet::new(),
+            true,
+        );
+
+        let p0 = metrics
+            .partition_metrics
+            .iter()
+            .find(|m| m.topic == "topic1" && m.partition == 0)
+            .unwrap();
+        assert!(p0.data_loss_detected, "committed < low ⇒ data loss");
+        assert_eq!(p0.lag, 460, "offset lag stays exact: 500 - 40");
+        assert_eq!(
+            p0.lag_seconds,
+            Some(0.0),
+            "data-loss partition with no timestamp must emit lag_seconds = 0, not a gap"
+        );
+    }
+
+    #[test]
     fn disabled_time_lag_omits_all_lag_seconds() {
         // timestamp_sampling.enabled = false ⇒ seconds-of-lag is never
         // derived. Every partition (caught-up AND lagging) and every group

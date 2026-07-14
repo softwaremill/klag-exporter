@@ -164,20 +164,29 @@ impl TimestampSampler {
     /// `LagCalculator::calculate`.
     ///
     /// - Message mode: spawn up to `max_concurrent_fetches` blocking FFI
-    ///   tasks via the consumer pool. Unchanged behavior from Tier 2.
+    ///   tasks via the consumer pool. When `skip_data_loss_partitions` is set,
+    ///   partitions whose committed offset is below the low watermark are not
+    ///   fetched (retention deleted the committed message).
     /// - Rate mode: record this cycle's watermarks into the history ring
     ///   buffer, then synthesize `timestamp_ms = now_ms - estimate_secs *
     ///   1000` for each laggy partition where a reliable rate is available.
-    ///   `max_concurrent_fetches` is ignored.
+    ///   `max_concurrent_fetches` and `skip_data_loss_partitions` are ignored.
     pub async fn compute_time_lags(
         &self,
         snapshot: &OffsetsSnapshot,
         now_ms: i64,
         max_concurrent_fetches: usize,
+        skip_data_loss_partitions: bool,
     ) -> HashMap<(String, TopicPartition), TimestampData> {
         match self {
             Self::Message(s) => {
-                compute_time_lags_message(s, snapshot, max_concurrent_fetches).await
+                compute_time_lags_message(
+                    s,
+                    snapshot,
+                    max_concurrent_fetches,
+                    skip_data_loss_partitions,
+                )
+                .await
             }
             Self::Rate(s) => compute_time_lags_rate(s, snapshot, now_ms),
         }
@@ -238,13 +247,22 @@ async fn compute_time_lags_message(
     sampler: &MessageSampler,
     snapshot: &OffsetsSnapshot,
     max_concurrent_fetches: usize,
+    skip_data_loss_partitions: bool,
 ) -> HashMap<(String, TopicPartition), TimestampData> {
     let mut requests: Vec<(String, TopicPartition, i64)> = Vec::new();
     for group in &snapshot.groups {
         for (tp, committed_offset) in &group.offsets {
-            let high = snapshot
+            let (low, high) = snapshot
                 .get_watermark(tp)
-                .map_or(*committed_offset, |(_, h)| h);
+                .unwrap_or((*committed_offset, *committed_offset));
+            // Retention has deleted the committed message when the committed
+            // offset is below the low watermark. A fetch there can only time
+            // out or read the wrong (earliest) message, so skip it when asked:
+            // the lag calculator still emits exact offset lag and a time lag of
+            // 0 with `data_loss_detected`.
+            if skip_data_loss_partitions && *committed_offset < low {
+                continue;
+            }
             if high - *committed_offset > 0 {
                 requests.push((group.group_id.clone(), tp.clone(), *committed_offset));
             }
@@ -361,7 +379,7 @@ mod tests {
         };
         let _ = tokio::runtime::Runtime::new()
             .unwrap()
-            .block_on(sampler.compute_time_lags(&snap1, 0, 1));
+            .block_on(sampler.compute_time_lags(&snap1, 0, 1, false));
 
         std::thread::sleep(Duration::from_millis(100));
 
@@ -386,7 +404,7 @@ mod tests {
         let now_ms = 1_000_000_000i64;
         let out = tokio::runtime::Runtime::new()
             .unwrap()
-            .block_on(sampler.compute_time_lags(&snap2, now_ms, 1));
+            .block_on(sampler.compute_time_lags(&snap2, now_ms, 1, false));
 
         let ts = out
             .get(&("g".to_string(), tp_key))

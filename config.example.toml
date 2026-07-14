@@ -36,6 +36,11 @@ enabled = true
 # Message-mode settings (ignored when mode = "rate"):
 cache_ttl = "60s"
 max_concurrent_fetches = 5
+# Skip the per-message fetch for partitions whose committed offset is below the
+# low watermark (retention deleted the committed message). Such a fetch can only
+# time out or read the wrong earliest message; offset lag stays exact and time
+# lag is reported as 0 with data_loss_detected. Default false.
+skip_data_loss_partitions = false
 
 # Rate-mode settings (ignored when mode = "message"):
 # rate_history_samples = 5       # watermark observations per partition
