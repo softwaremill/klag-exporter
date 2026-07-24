@@ -207,6 +207,7 @@ impl TimestampSampler {
                 compute_time_lags_message(
                     s,
                     snapshot,
+                    now_ms,
                     max_concurrent_fetches,
                     skip_data_loss_partitions,
                 )
@@ -270,6 +271,7 @@ fn compute_time_lags_rate(
 async fn compute_time_lags_message(
     sampler: &MessageSampler,
     snapshot: &OffsetsSnapshot,
+    now_ms: i64,
     max_concurrent_fetches: usize,
     skip_data_loss_partitions: bool,
 ) -> HashMap<(String, TopicPartition), TimestampData> {
@@ -319,17 +321,28 @@ async fn compute_time_lags_message(
                 out.insert((group_id, tp), TimestampData { timestamp_ms: ts });
             }
             None => {
-                // No readable message at the committed offset: it is the first
-                // uncommitted offset (the last stable offset) — e.g. a consumer
-                // wedged behind an open/hung transaction while the high watermark
-                // keeps advancing. Don't drop the series; pass 2 scans back to the
-                // last readable data record so the partition still reports its real,
-                // growing time lag instead of vanishing.
                 let low = low_by_key
                     .get(&(group_id.clone(), tp.clone()))
                     .copied()
                     .unwrap_or(committed);
-                fallbacks.push((group_id, tp, committed, low));
+                if committed <= low {
+                    // Committed offset is at or below the low watermark: the
+                    // committed message was purged (retention / Streams
+                    // deleteRecords caught up to it between the offset snapshot
+                    // and this fetch — a data-loss race the snapshot-time skip
+                    // check missed). Nothing stable remains to timestamp; report
+                    // 0, matching data-loss handling, rather than scanning and
+                    // warning.
+                    out.insert((group_id, tp), TimestampData { timestamp_ms: now_ms });
+                } else {
+                    // Committed offset is above the low watermark but unreadable:
+                    // it is the first uncommitted offset (the last stable offset),
+                    // e.g. a consumer wedged behind an open/hung transaction while
+                    // the high watermark keeps advancing. Don't drop the series;
+                    // pass 2 scans back to the last readable data record so the
+                    // partition still reports its real, growing time lag.
+                    fallbacks.push((group_id, tp, committed, low));
+                }
             }
         }
     }
