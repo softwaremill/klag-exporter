@@ -115,11 +115,25 @@ impl TimestampConsumer {
         // else: pool is full, consumer is dropped
     }
 
-    #[instrument(skip(self), fields(cluster = %self.cluster_name, topic = %tp.topic, partition = tp.partition, offset = offset))]
+    /// Fetch the message timestamp at `offset` using the configured fetch timeout.
     pub fn fetch_timestamp(
         &self,
         tp: &TopicPartition,
         offset: i64,
+    ) -> Result<Option<TimestampFetchResult>> {
+        self.fetch_timestamp_within(tp, offset, self.fetch_timeout)
+    }
+
+    /// Fetch the message timestamp at `offset`, bounding the poll to `timeout`.
+    /// The wedged-partition fallback scan uses this with a short timeout: a miss
+    /// (a transaction control marker or the last stable offset) blocks until the
+    /// timeout, so it should not tie up a slot for the full configured duration.
+    #[instrument(skip(self), fields(cluster = %self.cluster_name, topic = %tp.topic, partition = tp.partition, offset = offset))]
+    pub fn fetch_timestamp_within(
+        &self,
+        tp: &TopicPartition,
+        offset: i64,
+        timeout: Duration,
     ) -> Result<Option<TimestampFetchResult>> {
         use rdkafka::TopicPartitionList;
 
@@ -150,7 +164,7 @@ impl TimestampConsumer {
 
         consumer.assign(&tpl).map_err(KlagError::Kafka)?;
 
-        let result = consumer.poll(self.fetch_timeout).map_or_else(
+        let result = consumer.poll(timeout).map_or_else(
             || {
                 debug!(
                     topic = %tp.topic,

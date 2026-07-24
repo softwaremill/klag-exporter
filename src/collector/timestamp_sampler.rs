@@ -98,6 +98,30 @@ impl MessageSampler {
         Ok(fetch_result.map(|r| r.timestamp_ms))
     }
 
+    /// Scan back from the committed offset to the last readable data record, for a
+    /// consumer wedged at the last stable offset (behind an open transaction).
+    /// Transaction control markers just below the committed offset are never
+    /// delivered, so a read there returns `None`; walk back past them — bounded,
+    /// with a short per-probe timeout — to the data record. Bypasses the cache
+    /// (the committed offset is frozen, so nothing useful is cached for it).
+    fn scan_back_for_stable_timestamp(
+        &self,
+        tp: &TopicPartition,
+        committed: i64,
+        low: i64,
+    ) -> Option<i64> {
+        for offset in fallback_scan_offsets(committed, low) {
+            if let Ok(Some(r)) =
+                self.inner
+                    .consumer
+                    .fetch_timestamp_within(tp, offset, FALLBACK_PROBE_TIMEOUT)
+            {
+                return Some(r.timestamp_ms);
+            }
+        }
+        None
+    }
+
     fn recycle_pool(&self) -> Result<()> {
         self.inner.consumer.recycle_pool()
     }
@@ -250,6 +274,9 @@ async fn compute_time_lags_message(
     skip_data_loss_partitions: bool,
 ) -> HashMap<(String, TopicPartition), TimestampData> {
     let mut requests: Vec<(String, TopicPartition, i64)> = Vec::new();
+    // Low watermark per requested (group, tp): lets a `None` fetch fall back to
+    // the last stable message without ever reading below the retention floor.
+    let mut low_by_key: HashMap<(String, TopicPartition), i64> = HashMap::new();
     for group in &snapshot.groups {
         for (tp, committed_offset) in &group.offsets {
             let (low, high) = snapshot
@@ -264,6 +291,8 @@ async fn compute_time_lags_message(
                 continue;
             }
             if high - *committed_offset > 0 {
+                let key = (group.group_id.clone(), tp.clone());
+                low_by_key.insert(key, low);
                 requests.push((group.group_id.clone(), tp.clone(), *committed_offset));
             }
         }
@@ -278,7 +307,113 @@ async fn compute_time_lags_message(
         "Fetching per-partition message timestamps (message mode)"
     );
 
-    let semaphore = Arc::new(Semaphore::new(max_concurrent_fetches.max(1)));
+    let mut out = HashMap::new();
+
+    // Pass 1: the committed offset itself.
+    let mut fallbacks: Vec<(String, TopicPartition, i64, i64)> = Vec::new();
+    for (group_id, tp, committed, ts) in
+        fetch_timestamps_at(sampler, requests, max_concurrent_fetches).await
+    {
+        match ts {
+            Some(ts) => {
+                out.insert((group_id, tp), TimestampData { timestamp_ms: ts });
+            }
+            None => {
+                // No readable message at the committed offset: it is the first
+                // uncommitted offset (the last stable offset) — e.g. a consumer
+                // wedged behind an open/hung transaction while the high watermark
+                // keeps advancing. Don't drop the series; pass 2 scans back to the
+                // last readable data record so the partition still reports its real,
+                // growing time lag instead of vanishing.
+                let low = low_by_key
+                    .get(&(group_id.clone(), tp.clone()))
+                    .copied()
+                    .unwrap_or(committed);
+                fallbacks.push((group_id, tp, committed, low));
+            }
+        }
+    }
+
+    // Pass 2: for partitions whose committed offset was unreadable (wedged behind
+    // an open transaction), scan back to the last readable data record, skipping
+    // any transaction control markers. A miss here is unexpected — we could not
+    // read any data record near the committed offset — so it is warned, not
+    // silently dropped.
+    if !fallbacks.is_empty() {
+        debug!(
+            fallback_count = fallbacks.len(),
+            "Scanning back to last readable data record for wedged partitions"
+        );
+        let semaphore = Arc::new(Semaphore::new(max_concurrent_fetches.max(1)));
+        let mut handles = Vec::with_capacity(fallbacks.len());
+        for (group_id, tp, committed, low) in fallbacks {
+            let permit = Arc::clone(&semaphore);
+            let sampler = sampler.clone();
+            handles.push(tokio::spawn(async move {
+                let permit_guard: OwnedSemaphorePermit =
+                    permit.acquire_owned().await.expect("semaphore closed");
+                tokio::task::spawn_blocking(move || {
+                    let _p = permit_guard;
+                    let ts = sampler.scan_back_for_stable_timestamp(&tp, committed, low);
+                    (group_id, tp, ts)
+                })
+                .await
+            }));
+        }
+        for result in join_all(handles).await {
+            match result {
+                Ok(Ok((group_id, tp, Some(ts)))) => {
+                    out.insert((group_id, tp), TimestampData { timestamp_ms: ts });
+                }
+                Ok(Ok((group_id, tp, None))) => {
+                    warn!(
+                        group = %group_id,
+                        topic = %tp.topic,
+                        partition = tp.partition,
+                        "No readable data record near committed offset; time lag unavailable this cycle"
+                    );
+                }
+                Ok(Err(e)) => warn!(error = %e, "Fallback scan blocking task panicked"),
+                Err(e) => warn!(error = %e, "Fallback scan task panicked"),
+            }
+        }
+    }
+    out
+}
+
+/// Max offsets to walk back looking for the last readable data record when the
+/// committed offset is unreadable. Bounds a pathological run of transaction
+/// control markers (each occupies an offset but is never delivered to consumers).
+const FALLBACK_SCAN_MAX: i64 = 8;
+
+/// Short per-probe timeout for the fallback scan. A readable data record returns
+/// in well under this; a miss (a control marker or the last stable offset) blocks
+/// until the timeout, so keep it short to avoid tying up a fetch slot.
+const FALLBACK_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Offsets to probe, nearest-first, when the committed message is unreadable: the
+/// committed offset is the first uncommitted message, and one or more transaction
+/// control markers may sit just below it. Walks back from `committed - 1`,
+/// stopping at the retention floor or after [`FALLBACK_SCAN_MAX`] steps. Empty
+/// when the committed offset is on the retention floor.
+fn fallback_scan_offsets(committed: i64, low: i64) -> Vec<i64> {
+    let floor = low.max(0);
+    (1..=FALLBACK_SCAN_MAX)
+        .map(|k| committed - k)
+        .take_while(|&o| o >= floor)
+        .collect()
+}
+
+/// Fetch message timestamps for each `(group, tp, offset)` request, bounded by
+/// `max_concurrent`. Fetch errors and task panics are logged and surface as a
+/// `None` timestamp so a failed row never silently disappears; the returned offset
+/// echoes the request so callers can react per row.
+async fn fetch_timestamps_at(
+    sampler: &MessageSampler,
+    requests: Vec<(String, TopicPartition, i64)>,
+    max_concurrent: usize,
+) -> Vec<(String, TopicPartition, i64, Option<i64>)> {
+    let semaphore = Arc::new(Semaphore::new(max_concurrent.max(1)));
     let mut handles = Vec::with_capacity(requests.len());
     for (group_id, tp, offset) in requests {
         let permit = Arc::clone(&semaphore);
@@ -286,41 +421,34 @@ async fn compute_time_lags_message(
         handles.push(tokio::spawn(async move {
             let permit_guard: OwnedSemaphorePermit =
                 permit.acquire_owned().await.expect("semaphore closed");
-            let result = tokio::task::spawn_blocking(move || {
+            tokio::task::spawn_blocking(move || {
                 let _p = permit_guard;
-                let result = sampler.get_timestamp(&group_id, &tp, offset);
-                ((group_id, tp), result)
+                let ts = match sampler.get_timestamp(&group_id, &tp, offset) {
+                    Ok(ts) => ts,
+                    Err(e) => {
+                        warn!(
+                            group = %group_id,
+                            topic = %tp.topic,
+                            partition = tp.partition,
+                            offset,
+                            error = %e,
+                            "Message timestamp fetch failed"
+                        );
+                        None
+                    }
+                };
+                (group_id, tp, offset, ts)
             })
-            .await;
-            result
+            .await
         }));
     }
 
-    let results = join_all(handles).await;
-    let mut out = HashMap::new();
-    for result in results {
+    let mut out = Vec::with_capacity(handles.len());
+    for result in join_all(handles).await {
         match result {
-            Ok(Ok(((group_id, tp), Ok(Some(ts))))) => {
-                out.insert((group_id, tp), TimestampData { timestamp_ms: ts });
-            }
-            Ok(Ok(((_group_id, _tp), Ok(None)))) => {
-                // No message available at offset; skip.
-            }
-            Ok(Ok(((group_id, tp), Err(e)))) => {
-                warn!(
-                    group = %group_id,
-                    topic = %tp.topic,
-                    partition = tp.partition,
-                    error = %e,
-                    "Message timestamp fetch failed"
-                );
-            }
-            Ok(Err(e)) => {
-                warn!(error = %e, "Message timestamp blocking task panicked");
-            }
-            Err(e) => {
-                warn!(error = %e, "Message timestamp task panicked");
-            }
+            Ok(Ok(entry)) => out.push(entry),
+            Ok(Err(e)) => warn!(error = %e, "Message timestamp blocking task panicked"),
+            Err(e) => warn!(error = %e, "Message timestamp task panicked"),
         }
     }
     out
@@ -344,6 +472,23 @@ impl std::fmt::Debug for TimestampSampler {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fallback_scan_offsets_walks_back_bounded_by_floor() {
+        // Wedged consumer well above the low watermark: probe committed-1 down to
+        // committed-FALLBACK_SCAN_MAX, nearest first.
+        assert_eq!(
+            fallback_scan_offsets(775060, 771303),
+            vec![775059, 775058, 775057, 775056, 775055, 775054, 775053, 775052]
+        );
+        // Stops at the retention floor.
+        assert_eq!(fallback_scan_offsets(771305, 771303), vec![771304, 771303]);
+        // Committed on the retention floor: nothing stable below it.
+        assert!(fallback_scan_offsets(771303, 771303).is_empty());
+        // committed=1, low=0 -> offset 0 is the earliest readable record.
+        assert_eq!(fallback_scan_offsets(1, 0), vec![0]);
+        assert!(fallback_scan_offsets(0, 0).is_empty());
+    }
 
     #[test]
     fn cached_timestamp_ttl_expiry_check() {
