@@ -333,7 +333,12 @@ async fn compute_time_lags_message(
                     // check missed). Nothing stable remains to timestamp; report
                     // 0, matching data-loss handling, rather than scanning and
                     // warning.
-                    out.insert((group_id, tp), TimestampData { timestamp_ms: now_ms });
+                    out.insert(
+                        (group_id, tp),
+                        TimestampData {
+                            timestamp_ms: now_ms,
+                        },
+                    );
                 } else {
                     // Committed offset is above the low watermark but unreadable:
                     // it is the first uncommitted offset (the last stable offset),
