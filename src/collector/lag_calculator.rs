@@ -142,11 +142,16 @@ impl LagCalculator {
                     snapshot.get_watermark(tp).unwrap_or((0, *committed_offset));
 
                 // Calculate lag, clamped to 0 for race conditions
-                let lag = (high_watermark - committed_offset).max(0);
+                let raw_lag = (high_watermark - committed_offset).max(0);
 
                 // Data loss detection: committed offset is before the low watermark
                 let data_loss_detected = *committed_offset < low_watermark;
                 let messages_lost = (low_watermark - *committed_offset).max(0);
+
+                // On data loss the committed offset is below the low watermark, so the
+                // gap is unconsumable; report 0 offset lag. messages_lost and
+                // retention_margin carry the magnitude.
+                let lag = if data_loss_detected { 0 } else { raw_lag };
 
                 // Prevention metrics
                 let retention_margin = *committed_offset - low_watermark; // negative if data loss
@@ -175,7 +180,7 @@ impl LagCalculator {
                 let ts_data = timestamps.get(&(group.group_id.clone(), tp.clone()));
                 let lag_seconds = if !time_lag_enabled {
                     None
-                } else if lag > 0 {
+                } else if raw_lag > 0 {
                     ts_data
                         .map(|td| ((now_ms - td.timestamp_ms) as f64) / 1000.0)
                         .map(|s| s.max(0.0))
@@ -413,9 +418,10 @@ mod tests {
     fn data_loss_partition_without_timestamp_emits_zero_seconds() {
         // A partition whose committed offset is below the low watermark is a
         // data-loss partition. In message mode with skip_data_loss_partitions
-        // on, its fetch is skipped so no timestamp is produced. It must still
-        // emit exact offset lag and lag_seconds = 0 (not None, not inflated)
-        // with data_loss_detected set.
+        // on, its fetch is skipped so no timestamp is produced. It must emit
+        // 0 offset lag (the gap is unconsumable; magnitude lives in
+        // messages_lost / retention_margin) and lag_seconds = 0 (not None, not
+        // inflated) with data_loss_detected set.
         let mut watermarks = HashMap::new();
         // low = 100, high = 500: retention has advanced past the committed offset.
         watermarks.insert(TopicPartition::new("topic1", 0), (100, 500));
@@ -451,7 +457,18 @@ mod tests {
             .find(|m| m.topic == "topic1" && m.partition == 0)
             .unwrap();
         assert!(p0.data_loss_detected, "committed < low ⇒ data loss");
-        assert_eq!(p0.lag, 460, "offset lag stays exact: 500 - 40");
+        assert_eq!(
+            p0.lag, 0,
+            "data-loss offset lag reported as 0: gap is unconsumable"
+        );
+        assert_eq!(
+            p0.messages_lost, 60,
+            "messages_lost carries magnitude: low(100) - committed(40)"
+        );
+        assert_eq!(
+            p0.retention_margin, -60,
+            "retention_margin negative under data loss: committed(40) - low(100)"
+        );
         assert_eq!(
             p0.lag_seconds,
             Some(0.0),

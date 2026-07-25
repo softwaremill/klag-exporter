@@ -126,6 +126,16 @@ impl MetricsRegistry {
                         HELP_GROUP_OFFSET,
                     ));
 
+                    // compaction_detected / data_loss_detected annotate the lag metrics
+                    labels.insert(
+                        LABEL_COMPACTION_DETECTED.to_string(),
+                        m.compaction_detected.to_string(),
+                    );
+                    labels.insert(
+                        LABEL_DATA_LOSS_DETECTED.to_string(),
+                        m.data_loss_detected.to_string(),
+                    );
+
                     points.push(MetricPoint::gauge(
                         METRIC_GROUP_LAG,
                         labels.clone(),
@@ -134,15 +144,6 @@ impl MetricsRegistry {
                     ));
 
                     if let Some(lag_seconds) = m.lag_seconds {
-                        // Add compaction_detected and data_loss_detected labels to lag_seconds metric
-                        labels.insert(
-                            LABEL_COMPACTION_DETECTED.to_string(),
-                            m.compaction_detected.to_string(),
-                        );
-                        labels.insert(
-                            LABEL_DATA_LOSS_DETECTED.to_string(),
-                            m.data_loss_detected.to_string(),
-                        );
                         points.push(MetricPoint::gauge(
                             METRIC_GROUP_LAG_SECONDS,
                             labels.clone(),
