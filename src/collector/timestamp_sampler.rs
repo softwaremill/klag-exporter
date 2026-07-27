@@ -394,8 +394,12 @@ async fn compute_time_lags_message(
                         "No readable data record near committed offset; time lag unavailable this cycle"
                     );
                 }
-                Ok(Err(e)) => warn!(error = %e, "Fallback scan blocking task panicked"),
-                Err(e) => warn!(error = %e, "Fallback scan task panicked"),
+                Ok(Err(e)) => {
+                    warn!(error = %e, kind = if e.is_panic() { "panic" } else { "cancelled" }, "Fallback scan blocking task did not complete")
+                }
+                Err(e) => {
+                    warn!(error = %e, kind = if e.is_panic() { "panic" } else { "cancelled" }, "Fallback scan task did not complete")
+                }
             }
         }
     }
@@ -468,8 +472,12 @@ async fn fetch_timestamps_at(
     for result in join_all(handles).await {
         match result {
             Ok(Ok(entry)) => out.push(entry),
-            Ok(Err(e)) => warn!(error = %e, "Message timestamp blocking task panicked"),
-            Err(e) => warn!(error = %e, "Message timestamp task panicked"),
+            Ok(Err(e)) => {
+                warn!(error = %e, kind = if e.is_panic() { "panic" } else { "cancelled" }, "Message timestamp blocking task did not complete")
+            }
+            Err(e) => {
+                warn!(error = %e, kind = if e.is_panic() { "panic" } else { "cancelled" }, "Message timestamp task did not complete")
+            }
         }
     }
     out
