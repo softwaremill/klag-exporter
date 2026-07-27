@@ -83,9 +83,10 @@ pub struct TimestampSamplingConfig {
     /// `message` mode: skip the per-message fetch for partitions whose
     /// committed offset is below the partition's low watermark. Retention has
     /// already deleted the committed message, so the fetch can only time out
-    /// or read the wrong (earliest) message; the partition still emits exact
-    /// offset lag and a time lag of 0 with `data_loss_detected`. Off by
-    /// default. Ignored in `rate` mode.
+    /// or read the wrong (earliest) message; the partition is still reported,
+    /// with offset lag and time lag both 0 and `data_loss_detected` set (the
+    /// unconsumable magnitude is carried by `messages_lost` / `retention_margin`).
+    /// Off by default. Ignored in `rate` mode.
     #[serde(default = "default_skip_data_loss_partitions")]
     pub skip_data_loss_partitions: bool,
     /// `rate` mode: maximum number of (time, `high_watermark`) samples

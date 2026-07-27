@@ -287,8 +287,9 @@ async fn compute_time_lags_message(
             // Retention has deleted the committed message when the committed
             // offset is below the low watermark. A fetch there can only time
             // out or read the wrong (earliest) message, so skip it when asked:
-            // the lag calculator still emits exact offset lag and a time lag of
-            // 0 with `data_loss_detected`.
+            // the lag calculator still reports the partition, with offset lag
+            // and time lag both 0 and `data_loss_detected` set (magnitude in
+            // `messages_lost` / `retention_margin`).
             if skip_data_loss_partitions && *committed_offset < low {
                 continue;
             }
