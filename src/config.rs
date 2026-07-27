@@ -494,20 +494,22 @@ impl Config {
             ));
         }
         if ts.enabled && ts.mode == TimestampSamplingMode::Message {
-            // A zero per-fetch timeout makes librdkafka's poll non-blocking, so
-            // it returns before the just-assigned partition's fetch completes
-            // and no timestamp is ever sampled. librdkafka's poll timeout is an
-            // i32 count of milliseconds; a value that overflows that field wraps
-            // to a negative number, which librdkafka treats as "block forever" —
-            // the opposite of bounding the per-fetch wait. Keep the timeout in
-            // the (0, i32::MAX ms] range so it always maps to a finite wait.
-            if ts.fetch_timeout.is_zero() {
-                return Err(KlagError::Config(
-                    "timestamp_sampling.fetch_timeout must be greater than 0 when mode = 'message'"
-                        .to_string(),
-                ));
+            // librdkafka's poll timeout is an i32 count of milliseconds. A value
+            // that rounds down to 0ms makes poll non-blocking, so it returns
+            // before the just-assigned partition's fetch completes and no
+            // timestamp is ever sampled; a value that overflows i32 wraps to a
+            // negative number, which librdkafka treats as "block forever" — the
+            // opposite of bounding the per-fetch wait. Validate the millisecond
+            // value directly (not Duration::is_zero) so a sub-millisecond timeout
+            // like "500us", which truncates to 0ms, is also rejected.
+            let timeout_ms = ts.fetch_timeout.as_millis();
+            if timeout_ms == 0 {
+                return Err(KlagError::Config(format!(
+                    "timestamp_sampling.fetch_timeout ({:?}) must be at least 1ms when mode = 'message'",
+                    ts.fetch_timeout
+                )));
             }
-            if ts.fetch_timeout.as_millis() > i32::MAX as u128 {
+            if timeout_ms > i32::MAX as u128 {
                 return Err(KlagError::Config(format!(
                     "timestamp_sampling.fetch_timeout ({:?}) must not exceed {} ms (~24.8 days)",
                     ts.fetch_timeout,
@@ -1071,8 +1073,31 @@ bootstrap_servers = "localhost:9092"
         file.write_all(config_content.as_bytes()).unwrap();
         let err = Config::load(Some(file.path().to_str().unwrap())).unwrap_err();
         assert!(
-            err.to_string()
-                .contains("fetch_timeout must be greater than 0"),
+            err.to_string().contains("must be at least 1ms"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_message_mode_rejects_submillisecond_fetch_timeout() {
+        // 500us is non-zero but truncates to 0ms for librdkafka's poll — the
+        // same non-blocking failure as 0s, so it must be rejected too.
+        let config_content = r#"
+[exporter]
+
+[exporter.timestamp_sampling]
+mode = "message"
+fetch_timeout = "500us"
+
+[[clusters]]
+name = "test"
+bootstrap_servers = "localhost:9092"
+"#;
+        let mut file = NamedTempFile::new().unwrap();
+        file.write_all(config_content.as_bytes()).unwrap();
+        let err = Config::load(Some(file.path().to_str().unwrap())).unwrap_err();
+        assert!(
+            err.to_string().contains("must be at least 1ms"),
             "unexpected error: {err}"
         );
     }
