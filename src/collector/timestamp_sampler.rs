@@ -325,14 +325,16 @@ async fn compute_time_lags_message(
                     .get(&(group_id.clone(), tp.clone()))
                     .copied()
                     .unwrap_or(committed);
-                if committed <= low {
-                    // Committed offset is at or below the low watermark: the
-                    // committed message was purged (retention / Streams
-                    // deleteRecords caught up to it between the offset snapshot
-                    // and this fetch — a data-loss race the snapshot-time skip
-                    // check missed). Nothing stable remains to timestamp; report
-                    // 0, matching data-loss handling, rather than scanning and
-                    // warning.
+                if committed < low {
+                    // Committed offset is below the low watermark: the committed
+                    // message was purged (retention / Streams deleteRecords
+                    // caught up to it between the offset snapshot and this fetch
+                    // — a data-loss race the snapshot-time skip check missed).
+                    // Matches the `committed < low_watermark` data-loss test in
+                    // the lag calculator; report 0. A committed offset exactly at
+                    // `low` is still readable, so it is NOT data loss — it falls
+                    // through to the bounded scan below (which finds nothing and
+                    // warns).
                     out.insert(
                         (group_id, tp),
                         TimestampData {
