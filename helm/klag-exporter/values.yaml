@@ -156,6 +156,10 @@ config:
     max_concurrent_groups: 10
     # Maximum partitions to fetch watermarks for in parallel
     max_concurrent_watermarks: 50
+    # Tokio blocking-thread pool. Shared by ALL cluster loops in the process, so a
+    # multi-cluster deployment needs this to exceed
+    # clusters x (max_concurrent_groups + max_concurrent_fetches).
+    max_blocking_threads: 64
     # Recycle librdkafka clients every N cycles to release accumulated metadata.
     # Set to 0 to disable. Default: 50 (~25 min at 30s poll interval).
     client_recycle_interval: 50
