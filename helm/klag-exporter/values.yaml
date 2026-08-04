@@ -139,6 +139,13 @@ config:
     # Message-mode settings (ignored when mode = "rate"):
     # cache_ttl: "60s"
     # max_concurrent_fetches: 10
+    # Skip the fetch for every partition whose committed offset has fallen below
+    # the low watermark, i.e. retention deleted the committed message. Such a
+    # fetch resets to the earliest surviving offset and, on a drained partition,
+    # blocks for the full fetch timeout. The partition is still reported either
+    # way, with its offset lag and data_loss_detected; the trade-off is that time
+    # lag reports 0 rather than the age of the earliest surviving message.
+    # skip_data_loss_partitions: false
     # Rate-mode settings (ignored when mode = "message"):
     # rate_history_samples: 5
     # rate_history_max_age: "10m"

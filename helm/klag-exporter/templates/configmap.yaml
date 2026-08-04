@@ -27,6 +27,9 @@ data:
     {{- if .max_concurrent_fetches }}
     max_concurrent_fetches = {{ .max_concurrent_fetches }}
     {{- end }}
+    {{- if hasKey . "skip_data_loss_partitions" }}
+    skip_data_loss_partitions = {{ .skip_data_loss_partitions }}
+    {{- end }}
     {{- if .rate_history_samples }}
     rate_history_samples = {{ .rate_history_samples }}
     {{- end }}
