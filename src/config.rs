@@ -80,6 +80,24 @@ pub struct TimestampSamplingConfig {
     /// `rate` mode (rate mode does no I/O).
     #[serde(default = "default_max_concurrent_fetches")]
     pub max_concurrent_fetches: usize,
+    /// `message` mode: skip the per-message fetch for every partition whose
+    /// committed offset has fallen below the partition's low watermark, meaning
+    /// retention already deleted the committed message.
+    ///
+    /// Such a fetch seeks out of range and resets to the earliest surviving
+    /// offset. On a drained partition there is nothing left to read, so it
+    /// blocks for the full fetch timeout waiting for a message that never
+    /// arrives, and enough of those can stall the collection cycle on large
+    /// clusters.
+    ///
+    /// The partition is still reported either way, with its offset lag and the
+    /// `data_loss_detected` label. The trade-off is time lag: skipping reports
+    /// `0`, whereas fetching reports the age of the earliest surviving
+    /// message — already an understatement of the true lag, but not zero.
+    ///
+    /// Off by default. Ignored in `rate` mode.
+    #[serde(default)]
+    pub skip_data_loss_partitions: bool,
     /// `rate` mode: maximum number of (time, `high_watermark`) samples
     /// retained per partition. Larger = smoother rate estimate, more
     /// memory. Default 5.
@@ -351,6 +369,7 @@ impl Default for TimestampSamplingConfig {
             mode: default_timestamp_sampling_mode(),
             cache_ttl: default_cache_ttl(),
             max_concurrent_fetches: default_max_concurrent_fetches(),
+            skip_data_loss_partitions: false,
             rate_history_samples: default_rate_history_samples(),
             rate_history_max_age: default_rate_history_max_age(),
             rate_min_msgs_per_sec: default_rate_min_msgs_per_sec(),
@@ -789,6 +808,10 @@ bootstrap_servers = "localhost:9092"
             TimestampSamplingMode::Rate,
             "default mode should be rate (Tier 3)"
         );
+        assert!(
+            !config.exporter.timestamp_sampling.skip_data_loss_partitions,
+            "skip_data_loss_partitions should default to false"
+        );
         assert!(!config.exporter.otel.enabled);
         // Performance defaults
         assert_eq!(
@@ -819,6 +842,25 @@ bootstrap_servers = "localhost:9092"
             config.exporter.staleness_threshold.is_none(),
             "staleness_threshold should default to None (falls back to poll_interval * 3)"
         );
+    }
+
+    #[test]
+    fn test_skip_data_loss_partitions_parses() {
+        let config_content = r#"
+[exporter]
+
+[exporter.timestamp_sampling]
+mode = "message"
+skip_data_loss_partitions = true
+
+[[clusters]]
+name = "test"
+bootstrap_servers = "localhost:9092"
+"#;
+        let mut file = NamedTempFile::new().unwrap();
+        file.write_all(config_content.as_bytes()).unwrap();
+        let config = Config::load(Some(file.path().to_str().unwrap())).unwrap();
+        assert!(config.exporter.timestamp_sampling.skip_data_loss_partitions);
     }
 
     #[test]

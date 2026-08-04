@@ -254,6 +254,15 @@ rate_min_msgs_per_sec = 0.01       # below this rate → time lag reported as mi
 # Message-mode tuning (only used when mode = "message"):
 cache_ttl = "60s"
 max_concurrent_fetches = 10
+# Skip the per-message fetch for every partition whose committed offset has
+# fallen below the low watermark, i.e. retention deleted the committed message.
+# Such a fetch resets to the earliest surviving offset, and on a drained
+# partition it blocks for the full fetch timeout waiting for a message that
+# never arrives — enough of those stall the collection cycle on large clusters.
+# The partition is still reported either way, with its offset lag and
+# data_loss_detected; the trade-off is that time lag reports 0 rather than the
+# age of the earliest surviving message. Default false.
+skip_data_loss_partitions = false
 
 [exporter.otel]
 enabled = false
