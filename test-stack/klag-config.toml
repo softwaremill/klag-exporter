@@ -42,6 +42,7 @@ max_concurrent_fetches = 5
 
 [exporter.performance]
 client_recycle_interval = 0  # disabled for small test cluster
+group_fetch_retries = 2      # exercise transient Admin API recovery in the test stack
 
 [exporter.otel]
 enabled = false
