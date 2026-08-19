@@ -1,6 +1,7 @@
 use crate::config::{CompiledFilters, Granularity, PerformanceConfig};
 use crate::error::Result;
 use crate::kafka::client::{ConsumerGroupInfo, KafkaClient, TopicPartition};
+use crate::retry::{full_jitter_backoff, retry_with_backoff};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -515,7 +516,7 @@ impl OffsetCollector {
         &self,
         group_ids: &[&str],
     ) -> HashMap<String, HashMap<TopicPartition, i64>> {
-        use crate::kafka::admin::list_consumer_group_offsets_batched;
+        use crate::kafka::admin::{list_consumer_group_offsets_batched, AdminRequestError};
 
         if group_ids.is_empty() {
             return HashMap::new();
@@ -526,11 +527,13 @@ impl OffsetCollector {
 
         let offset_timeout = self.performance.offset_fetch_timeout;
         let max_concurrent = self.performance.max_concurrent_groups;
+        let max_retries = self.performance.group_fetch_retries;
 
         debug!(
             groups = group_ids.len(),
             per_call_chunk = PER_CALL_CHUNK,
             max_concurrent = max_concurrent,
+            max_retries = max_retries,
             "Fetching group offsets (one call per group, fanned out)"
         );
 
@@ -539,25 +542,52 @@ impl OffsetCollector {
 
         let mut handles = Vec::with_capacity(group_ids.len());
         for gid in group_ids {
-            let gid = gid.to_string();
+            let gid: Arc<str> = Arc::from(*gid);
             let permit = semaphore.clone();
             let client_clone = Arc::clone(&client);
             handles.push(tokio::spawn(async move {
-                let _permit: OwnedSemaphorePermit =
-                    permit.acquire_owned().await.expect("semaphore closed");
-                // Return the group id alongside the result so failure logs
-                // can report which group broke.
-                let result = tokio::task::spawn_blocking({
-                    let gid = gid.clone();
-                    move || {
-                        list_consumer_group_offsets_batched(
-                            &client_clone.admin_handle(),
-                            &[gid.as_str()],
-                            offset_timeout,
-                            PER_CALL_CHUNK,
-                        )
-                    }
-                })
+                let result = retry_with_backoff(
+                    max_retries,
+                    |attempt| {
+                        let gid = Arc::clone(&gid);
+                        let permit = Arc::clone(&permit);
+                        let client = Arc::clone(&client_clone);
+                        async move {
+                            if attempt > 1 {
+                                debug!(
+                                    group = %gid,
+                                    attempt = attempt,
+                                    max_attempts = max_retries.saturating_add(1),
+                                    "Retrying failed ListConsumerGroupOffsets request"
+                                );
+                            }
+                            // Every attempt, including retries, acquires the
+                            // same concurrency permit. Release it before any
+                            // retry backoff so sleeping calls do not occupy a
+                            // scarce blocking-operation slot.
+                            let _permit: OwnedSemaphorePermit =
+                                permit.acquire_owned().await.expect("semaphore closed");
+                            let response = tokio::task::spawn_blocking(move || {
+                                list_consumer_group_offsets_batched(
+                                    &client.admin_handle(),
+                                    &[gid.as_ref()],
+                                    offset_timeout,
+                                    PER_CALL_CHUNK,
+                                )
+                            })
+                            .await
+                            .map_err(|error| {
+                                AdminRequestError::task(
+                                    "ListConsumerGroupOffsets",
+                                    format!("blocking task failed: {error}"),
+                                )
+                            })??;
+                            response.into_single_group_result()
+                        }
+                    },
+                    AdminRequestError::is_retriable,
+                    full_jitter_backoff,
+                )
                 .await;
                 (gid, result)
             }));
@@ -568,12 +598,24 @@ impl OffsetCollector {
         let mut merged: HashMap<String, HashMap<TopicPartition, i64>> = HashMap::new();
         for r in results {
             match r {
-                Ok((_gid, Ok(Ok(map)))) => merged.extend(map),
-                Ok((gid, Ok(Err(e)))) => {
-                    warn!(group = %gid, error = %e, "Group-offset call failed");
+                Ok((gid, Ok((map, attempts)))) => {
+                    if attempts > 1 {
+                        debug!(
+                            group = %gid,
+                            attempts,
+                            "ListConsumerGroupOffsets recovered after retry"
+                        );
+                    }
+                    merged.extend(map);
                 }
-                Ok((gid, Err(e))) => {
-                    warn!(group = %gid, error = %e, "Group-offset call task panicked");
+                Ok((gid, Err(failure))) => {
+                    warn!(
+                        group = %gid,
+                        error = %failure.error,
+                        attempts = failure.attempts,
+                        stop_reason = ?failure.reason,
+                        "Group-offset call failed"
+                    );
                 }
                 Err(e) => warn!(error = %e, "Group-offset join error"),
             }

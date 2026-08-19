@@ -152,6 +152,10 @@ config:
     kafka_timeout: "30s"
     # Timeout for fetching committed offsets per consumer group
     offset_fetch_timeout: "10s"
+    # Additional attempts for retriable failures while fetching consumer-group
+    # descriptions and committed offsets (DescribeConsumerGroups and
+    # ListConsumerGroupOffsets). Set to 0 to disable retries.
+    group_fetch_retries: 0
     # Maximum consumer groups to fetch offsets for in parallel
     max_concurrent_groups: 10
     # Maximum partitions to fetch watermarks for in parallel

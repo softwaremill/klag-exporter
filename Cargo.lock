@@ -1273,6 +1273,7 @@ dependencies = [
  "opentelemetry-otlp",
  "opentelemetry_sdk",
  "prometheus",
+ "rand 0.9.4",
  "rdkafka",
  "regex",
  "serde",

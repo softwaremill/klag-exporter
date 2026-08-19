@@ -264,6 +264,7 @@ export_interval = "60s"
 # [exporter.performance]
 # kafka_timeout = "30s"
 # offset_fetch_timeout = "10s"
+# group_fetch_retries = 0
 # max_concurrent_groups = 10
 # max_concurrent_watermarks = 50
 
@@ -544,6 +545,11 @@ kafka_timeout = "30s"            # Default: 30s
 
 # Timeout for each per-group committed-offsets fetch
 offset_fetch_timeout = "10s"     # Default: 10s
+
+# Additional attempts for retriable failures while fetching consumer-group
+# descriptions and committed offsets (DescribeConsumerGroups and
+# ListConsumerGroupOffsets). Set to 0 to disable retries.
+group_fetch_retries = 2           # Default: 0
 
 # Parallel in-flight ListConsumerGroupOffsets calls (one group per call).
 # Increase on large clusters so a backlog of groups drains quickly.

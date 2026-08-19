@@ -20,6 +20,7 @@ mod http;
 mod kafka;
 mod leadership;
 mod metrics;
+mod retry;
 
 use crate::cluster::ClusterManager;
 use crate::config::Config;
