@@ -80,6 +80,12 @@ pub struct TimestampSamplingConfig {
     /// `rate` mode (rate mode does no I/O).
     #[serde(default = "default_max_concurrent_fetches")]
     pub max_concurrent_fetches: usize,
+    /// `message` mode: how long each per-message poll waits for a message at
+    /// the committed offset before giving up. Bounds the per-fetch wait so an
+    /// idle partition (no message at the offset) or a slow broker doesn't
+    /// stall the collection cycle. Ignored in `rate` mode.
+    #[serde(with = "humantime_serde", default = "default_fetch_timeout")]
+    pub fetch_timeout: Duration,
     /// `rate` mode: maximum number of (time, `high_watermark`) samples
     /// retained per partition. Larger = smoother rate estimate, more
     /// memory. Default 5.
@@ -256,6 +262,10 @@ const fn default_max_concurrent_fetches() -> usize {
     5
 }
 
+const fn default_fetch_timeout() -> Duration {
+    Duration::from_secs(5)
+}
+
 const fn default_timestamp_sampling_mode() -> TimestampSamplingMode {
     TimestampSamplingMode::Rate
 }
@@ -351,6 +361,7 @@ impl Default for TimestampSamplingConfig {
             mode: default_timestamp_sampling_mode(),
             cache_ttl: default_cache_ttl(),
             max_concurrent_fetches: default_max_concurrent_fetches(),
+            fetch_timeout: default_fetch_timeout(),
             rate_history_samples: default_rate_history_samples(),
             rate_history_max_age: default_rate_history_max_age(),
             rate_min_msgs_per_sec: default_rate_min_msgs_per_sec(),
@@ -481,6 +492,30 @@ impl Config {
                 "timestamp_sampling.max_concurrent_fetches must be >= 1 when mode = 'message'"
                     .to_string(),
             ));
+        }
+        if ts.enabled && ts.mode == TimestampSamplingMode::Message {
+            // librdkafka's poll timeout is an i32 count of milliseconds. A value
+            // that rounds down to 0ms makes poll non-blocking, so it returns
+            // before the just-assigned partition's fetch completes and no
+            // timestamp is ever sampled; a value that overflows i32 wraps to a
+            // negative number, which librdkafka treats as "block forever" — the
+            // opposite of bounding the per-fetch wait. Validate the millisecond
+            // value directly (not Duration::is_zero) so a sub-millisecond timeout
+            // like "500us", which truncates to 0ms, is also rejected.
+            let timeout_ms = ts.fetch_timeout.as_millis();
+            if timeout_ms == 0 {
+                return Err(KlagError::Config(format!(
+                    "timestamp_sampling.fetch_timeout ({:?}) must be at least 1ms when mode = 'message'",
+                    ts.fetch_timeout
+                )));
+            }
+            if timeout_ms > i32::MAX as u128 {
+                return Err(KlagError::Config(format!(
+                    "timestamp_sampling.fetch_timeout ({:?}) must not exceed {} ms (~24.8 days)",
+                    ts.fetch_timeout,
+                    i32::MAX
+                )));
+            }
         }
         if ts.enabled && ts.mode == TimestampSamplingMode::Rate {
             if ts.rate_history_samples < 2 {
@@ -789,6 +824,10 @@ bootstrap_servers = "localhost:9092"
             TimestampSamplingMode::Rate,
             "default mode should be rate (Tier 3)"
         );
+        assert_eq!(
+            config.exporter.timestamp_sampling.fetch_timeout,
+            Duration::from_secs(5)
+        );
         assert!(!config.exporter.otel.enabled);
         // Performance defaults
         assert_eq!(
@@ -974,6 +1013,141 @@ bootstrap_servers = "localhost:9092"
             err.to_string()
                 .contains("max_concurrent_fetches must be >= 1"),
             "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_fetch_timeout_parses_and_defaults() {
+        // Omitted → default 5s.
+        let default_content = r#"
+[exporter]
+
+[[clusters]]
+name = "test"
+bootstrap_servers = "localhost:9092"
+"#;
+        let mut file = NamedTempFile::new().unwrap();
+        file.write_all(default_content.as_bytes()).unwrap();
+        let config = Config::load(Some(file.path().to_str().unwrap())).unwrap();
+        assert_eq!(
+            config.exporter.timestamp_sampling.fetch_timeout,
+            Duration::from_secs(5),
+            "fetch_timeout should default to 5s when omitted"
+        );
+
+        // Set explicitly → parsed from the humantime string.
+        let custom_content = r#"
+[exporter]
+
+[exporter.timestamp_sampling]
+mode = "message"
+fetch_timeout = "12s"
+
+[[clusters]]
+name = "test"
+bootstrap_servers = "localhost:9092"
+"#;
+        let mut file = NamedTempFile::new().unwrap();
+        file.write_all(custom_content.as_bytes()).unwrap();
+        let config = Config::load(Some(file.path().to_str().unwrap())).unwrap();
+        assert_eq!(
+            config.exporter.timestamp_sampling.fetch_timeout,
+            Duration::from_secs(12)
+        );
+    }
+
+    #[test]
+    fn test_message_mode_rejects_zero_fetch_timeout() {
+        let config_content = r#"
+[exporter]
+
+[exporter.timestamp_sampling]
+mode = "message"
+fetch_timeout = "0s"
+
+[[clusters]]
+name = "test"
+bootstrap_servers = "localhost:9092"
+"#;
+        let mut file = NamedTempFile::new().unwrap();
+        file.write_all(config_content.as_bytes()).unwrap();
+        let err = Config::load(Some(file.path().to_str().unwrap())).unwrap_err();
+        assert!(
+            err.to_string().contains("must be at least 1ms"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_message_mode_rejects_submillisecond_fetch_timeout() {
+        // 500us is non-zero but truncates to 0ms for librdkafka's poll — the
+        // same non-blocking failure as 0s, so it must be rejected too.
+        let config_content = r#"
+[exporter]
+
+[exporter.timestamp_sampling]
+mode = "message"
+fetch_timeout = "500us"
+
+[[clusters]]
+name = "test"
+bootstrap_servers = "localhost:9092"
+"#;
+        let mut file = NamedTempFile::new().unwrap();
+        file.write_all(config_content.as_bytes()).unwrap();
+        let err = Config::load(Some(file.path().to_str().unwrap())).unwrap_err();
+        assert!(
+            err.to_string().contains("must be at least 1ms"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_message_mode_rejects_overflowing_fetch_timeout() {
+        // 30 days > i32::MAX ms (~24.8 days) → would wrap negative in librdkafka.
+        let config_content = r#"
+[exporter]
+
+[exporter.timestamp_sampling]
+mode = "message"
+fetch_timeout = "30days"
+
+[[clusters]]
+name = "test"
+bootstrap_servers = "localhost:9092"
+"#;
+        let mut file = NamedTempFile::new().unwrap();
+        file.write_all(config_content.as_bytes()).unwrap();
+        let err = Config::load(Some(file.path().to_str().unwrap())).unwrap_err();
+        assert!(
+            err.to_string().contains("fetch_timeout")
+                && err.to_string().contains("must not exceed"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_rate_mode_ignores_zero_fetch_timeout() {
+        // fetch_timeout is a message-mode knob; in rate mode a zero value must
+        // not be rejected (the sampler never reads it).
+        let config_content = r#"
+[exporter]
+
+[exporter.timestamp_sampling]
+mode = "rate"
+fetch_timeout = "0s"
+
+[[clusters]]
+name = "test"
+bootstrap_servers = "localhost:9092"
+"#;
+        let mut file = NamedTempFile::new().unwrap();
+        file.write_all(config_content.as_bytes()).unwrap();
+        let config = Config::load(Some(file.path().to_str().unwrap()))
+            .expect("rate mode should ignore fetch_timeout");
+        assert_eq!(
+            config.exporter.timestamp_sampling.fetch_timeout,
+            Duration::ZERO
         );
     }
 

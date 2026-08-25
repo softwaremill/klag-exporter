@@ -27,6 +27,9 @@ data:
     {{- if .max_concurrent_fetches }}
     max_concurrent_fetches = {{ .max_concurrent_fetches }}
     {{- end }}
+    {{- if .fetch_timeout }}
+    fetch_timeout = {{ .fetch_timeout | quote }}
+    {{- end }}
     {{- if .rate_history_samples }}
     rate_history_samples = {{ .rate_history_samples }}
     {{- end }}
