@@ -164,20 +164,29 @@ impl TimestampSampler {
     /// `LagCalculator::calculate`.
     ///
     /// - Message mode: spawn up to `max_concurrent_fetches` blocking FFI
-    ///   tasks via the consumer pool. Unchanged behavior from Tier 2.
+    ///   tasks via the consumer pool. Unchanged behavior from Tier 2, except
+    ///   that `skip_data_loss_partitions` drops partitions committed below
+    ///   their low watermark before any fetch is issued.
     /// - Rate mode: record this cycle's watermarks into the history ring
     ///   buffer, then synthesize `timestamp_ms = now_ms - estimate_secs *
     ///   1000` for each laggy partition where a reliable rate is available.
-    ///   `max_concurrent_fetches` is ignored.
+    ///   `max_concurrent_fetches` and `skip_data_loss_partitions` are ignored.
     pub async fn compute_time_lags(
         &self,
         snapshot: &OffsetsSnapshot,
         now_ms: i64,
         max_concurrent_fetches: usize,
+        skip_data_loss_partitions: bool,
     ) -> HashMap<(String, TopicPartition), TimestampData> {
         match self {
             Self::Message(s) => {
-                compute_time_lags_message(s, snapshot, max_concurrent_fetches).await
+                compute_time_lags_message(
+                    s,
+                    snapshot,
+                    max_concurrent_fetches,
+                    skip_data_loss_partitions,
+                )
+                .await
             }
             Self::Rate(s) => compute_time_lags_rate(s, snapshot, now_ms),
         }
@@ -234,22 +243,45 @@ fn compute_time_lags_rate(
     out
 }
 
-async fn compute_time_lags_message(
-    sampler: &MessageSampler,
+/// Select the partitions worth fetching a message timestamp for this cycle.
+///
+/// Only lagging partitions need a fetch. When `skip_data_loss_partitions` is
+/// set, partitions whose committed offset has already fallen below the low
+/// watermark are left out as well. Performs no I/O.
+fn build_fetch_requests(
     snapshot: &OffsetsSnapshot,
-    max_concurrent_fetches: usize,
-) -> HashMap<(String, TopicPartition), TimestampData> {
+    skip_data_loss_partitions: bool,
+) -> Vec<(String, TopicPartition, i64)> {
     let mut requests: Vec<(String, TopicPartition, i64)> = Vec::new();
     for group in &snapshot.groups {
         for (tp, committed_offset) in &group.offsets {
-            let high = snapshot
+            let (low, high) = snapshot
                 .get_watermark(tp)
-                .map_or(*committed_offset, |(_, h)| h);
+                .unwrap_or((*committed_offset, *committed_offset));
+            // The committed message was deleted by retention when the committed
+            // offset is below the low watermark; a fetch there seeks out of range
+            // and, on an idle/drained partition, blocks for the full fetch timeout
+            // waiting for a message that never arrives. Skip it when asked. The
+            // lag calculator still reports the partition — offset lag, a time lag
+            // of 0, and data_loss_detected.
+            if skip_data_loss_partitions && *committed_offset < low {
+                continue;
+            }
             if high - *committed_offset > 0 {
                 requests.push((group.group_id.clone(), tp.clone(), *committed_offset));
             }
         }
     }
+    requests
+}
+
+async fn compute_time_lags_message(
+    sampler: &MessageSampler,
+    snapshot: &OffsetsSnapshot,
+    max_concurrent_fetches: usize,
+    skip_data_loss_partitions: bool,
+) -> HashMap<(String, TopicPartition), TimestampData> {
+    let requests = build_fetch_requests(snapshot, skip_data_loss_partitions);
     if requests.is_empty() {
         return HashMap::new();
     }
@@ -327,6 +359,59 @@ impl std::fmt::Debug for TimestampSampler {
 mod tests {
     use super::*;
 
+    /// Snapshot exercising every branch of [`build_fetch_requests`]:
+    ///
+    /// - `healthy/0`   — lagging, committed above the low watermark. The ordinary case.
+    /// - `boundary/0`  — lagging, committed exactly *at* the low watermark. Still
+    ///   readable, so not data loss, and must never be skipped.
+    /// - `drained/0`   — lagging, committed *below* the low watermark. Retention
+    ///   deleted the committed message; this is the partition the flag targets.
+    /// - `caught-up/0` — committed at the high watermark. No lag, so never fetched
+    ///   whatever the flag says.
+    /// - `unknown/0`   — committed but absent from `watermarks`, so the lookup
+    ///   falls back to `(committed, committed)`. Yields no lag and no data loss,
+    ///   so it is never fetched either.
+    fn skip_fixture() -> OffsetsSnapshot {
+        use crate::collector::offset_collector::{GroupSnapshot, MemberSnapshot};
+        use std::collections::HashSet;
+
+        let mut watermarks = HashMap::new();
+        watermarks.insert(TopicPartition::new("healthy", 0), (100, 900));
+        watermarks.insert(TopicPartition::new("boundary", 0), (500, 900));
+        watermarks.insert(TopicPartition::new("drained", 0), (500, 900));
+        watermarks.insert(TopicPartition::new("caught-up", 0), (0, 50));
+        // "unknown" deliberately absent from watermarks.
+
+        let mut offsets = HashMap::new();
+        offsets.insert(TopicPartition::new("healthy", 0), 400);
+        offsets.insert(TopicPartition::new("boundary", 0), 500);
+        offsets.insert(TopicPartition::new("drained", 0), 100);
+        offsets.insert(TopicPartition::new("caught-up", 0), 50);
+        offsets.insert(TopicPartition::new("unknown", 0), 700);
+
+        OffsetsSnapshot {
+            cluster_name: "c".into(),
+            groups: vec![GroupSnapshot {
+                group_id: "g".into(),
+                state: "Stable".into(),
+                members: vec![] as Vec<MemberSnapshot>,
+                offsets,
+            }],
+            watermarks,
+            compacted_topics: HashSet::new(),
+            timestamp_ms: 0,
+        }
+    }
+
+    fn topics_of(requests: &[(String, TopicPartition, i64)]) -> Vec<&str> {
+        let mut topics: Vec<&str> = requests
+            .iter()
+            .map(|(_, tp, _)| tp.topic.as_ref())
+            .collect();
+        topics.sort_unstable();
+        topics
+    }
+
     #[test]
     fn cached_timestamp_ttl_expiry_check() {
         let cached = CachedTimestamp {
@@ -361,7 +446,7 @@ mod tests {
         };
         let _ = tokio::runtime::Runtime::new()
             .unwrap()
-            .block_on(sampler.compute_time_lags(&snap1, 0, 1));
+            .block_on(sampler.compute_time_lags(&snap1, 0, 1, false));
 
         std::thread::sleep(Duration::from_millis(100));
 
@@ -386,7 +471,7 @@ mod tests {
         let now_ms = 1_000_000_000i64;
         let out = tokio::runtime::Runtime::new()
             .unwrap()
-            .block_on(sampler.compute_time_lags(&snap2, now_ms, 1));
+            .block_on(sampler.compute_time_lags(&snap2, now_ms, 1, false));
 
         let ts = out
             .get(&("g".to_string(), tp_key))
@@ -399,6 +484,55 @@ mod tests {
         assert!(
             lag_ms > 0 && lag_ms < 60_000,
             "synthetic lag_ms out of sanity range: {lag_ms}"
+        );
+    }
+
+    #[test]
+    fn skip_disabled_fetches_every_lagging_partition() {
+        let requests = build_fetch_requests(&skip_fixture(), false);
+        assert_eq!(
+            topics_of(&requests),
+            vec!["boundary", "drained", "healthy"],
+            "with the flag off every lagging partition is fetched, including the drained one; \
+             caught-up and watermark-less partitions are excluded regardless of the flag"
+        );
+    }
+
+    #[test]
+    fn skip_enabled_drops_only_data_loss_partitions() {
+        let requests = build_fetch_requests(&skip_fixture(), true);
+        assert_eq!(
+            topics_of(&requests),
+            vec!["boundary", "healthy"],
+            "only the partition committed below its low watermark is skipped"
+        );
+        // The boundary case is the one worth pinning: a committed offset exactly
+        // at the low watermark is still readable, so the comparison must stay
+        // strict (`<`) and never widen to `<=`.
+        assert!(
+            requests
+                .iter()
+                .any(|(_, tp, offset)| tp.topic.as_ref() == "boundary" && *offset == 500),
+            "committed == low_watermark is still readable and must be fetched"
+        );
+    }
+
+    #[test]
+    fn requests_carry_the_owning_group_and_committed_offset() {
+        // topics_of() projects away group and offset, so assert them directly —
+        // the fetch is meaningless if either is wrong.
+        let requests = build_fetch_requests(&skip_fixture(), true);
+        assert!(
+            requests.iter().all(|(group_id, _, _)| group_id == "g"),
+            "every request must name the group whose offset it came from"
+        );
+        let healthy = requests
+            .iter()
+            .find(|(_, tp, _)| tp.topic.as_ref() == "healthy")
+            .expect("healthy partition should be fetched");
+        assert_eq!(
+            healthy.2, 400,
+            "the request must carry the group's committed offset, not a watermark"
         );
     }
 }

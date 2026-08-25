@@ -27,6 +27,7 @@ pub struct ClusterManager {
     max_backoff: Duration,
     granularity: Granularity,
     max_concurrent_fetches: usize,
+    skip_data_loss_partitions: bool,
     cache_cleanup_interval: Duration,
     collection_timeout: Duration,
     client_recycle_interval: u64,
@@ -107,6 +108,7 @@ impl ClusterManager {
             max_backoff: Duration::from_mins(5),
             granularity: exporter_config.granularity,
             max_concurrent_fetches: exporter_config.timestamp_sampling.max_concurrent_fetches,
+            skip_data_loss_partitions: exporter_config.timestamp_sampling.skip_data_loss_partitions,
             cache_cleanup_interval: exporter_config.timestamp_sampling.cache_ttl * 2,
             collection_timeout,
             client_recycle_interval: exporter_config.performance.client_recycle_interval,
@@ -293,7 +295,12 @@ impl ClusterManager {
         // configured (rate = no I/O, message = bounded concurrent FFI).
         let timestamps = if let Some(ref sampler) = self.timestamp_sampler {
             sampler
-                .compute_time_lags(&snapshot, now_ms, self.max_concurrent_fetches)
+                .compute_time_lags(
+                    &snapshot,
+                    now_ms,
+                    self.max_concurrent_fetches,
+                    self.skip_data_loss_partitions,
+                )
                 .await
         } else {
             HashMap::new()

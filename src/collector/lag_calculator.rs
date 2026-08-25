@@ -439,6 +439,94 @@ mod tests {
     }
 
     #[test]
+    fn data_loss_partition_without_timestamp_emits_zero_seconds() {
+        // A partition whose committed offset is below the low watermark has had
+        // its committed message deleted by retention, so no timestamp can be
+        // sampled for it — an absent entry in `timestamps` is exactly what that
+        // looks like, whether the fetch failed or was deliberately skipped.
+        //
+        // It must still be reported: lag_seconds = 0 rather than omitted, the
+        // data_loss_detected flag set, and offset lag untouched. Anything that
+        // turned this into `None` would silently drop the partition from the
+        // `*_lag_seconds` families.
+        //
+        // `lagging/0` is the control: also lagging, also missing a timestamp, but
+        // NOT data loss. It must report `None`. Without it, widening the fallback
+        // to an unconditional `Some(0.0)` would pass — and that would mask real
+        // lag on every partition whose fetch merely failed.
+        let mut watermarks = HashMap::new();
+        watermarks.insert(TopicPartition::new("drained", 0), (500, 900));
+        watermarks.insert(TopicPartition::new("lagging", 0), (0, 900));
+
+        let mut offsets = HashMap::new();
+        offsets.insert(TopicPartition::new("drained", 0), 100);
+        offsets.insert(TopicPartition::new("lagging", 0), 400);
+
+        let snapshot = OffsetsSnapshot {
+            cluster_name: "test-cluster".to_string(),
+            groups: vec![GroupSnapshot {
+                group_id: "g".to_string(),
+                state: "Stable".to_string(),
+                members: vec![],
+                offsets,
+            }],
+            watermarks,
+            compacted_topics: HashSet::new(),
+            timestamp_ms: 1_000_000,
+        };
+
+        let metrics =
+            LagCalculator::calculate(&snapshot, &HashMap::new(), 0, 100, &HashSet::new(), true);
+
+        let find = |topic: &str| {
+            metrics
+                .partition_metrics
+                .iter()
+                .find(|m| m.topic == topic && m.partition == 0)
+                .unwrap_or_else(|| panic!("{topic} must still be reported"))
+        };
+
+        let drained = find("drained");
+        assert!(
+            drained.data_loss_detected,
+            "committed below low watermark is data loss"
+        );
+        assert_eq!(
+            drained.lag_seconds,
+            Some(0.0),
+            "an unsampled data-loss partition must report 0 seconds, not None"
+        );
+        assert!(
+            drained.lag > 0,
+            "offset lag does not depend on timestamp sampling"
+        );
+        assert_eq!(
+            drained.messages_lost, 400,
+            "low_watermark - committed_offset"
+        );
+        assert_eq!(
+            drained.retention_margin, -400,
+            "negative margin signals data loss"
+        );
+
+        let lagging = find("lagging");
+        assert!(
+            !lagging.data_loss_detected,
+            "committed above low watermark is not data loss"
+        );
+        assert_eq!(
+            lagging.lag_seconds, None,
+            "the zero-second fallback must apply ONLY to data loss, otherwise a \
+             failed fetch would masquerade as zero lag"
+        );
+
+        assert_eq!(
+            metrics.data_loss_partition_count, 1,
+            "exactly one of the two partitions is data loss"
+        );
+    }
+
+    #[test]
     fn test_lag_calculator_handles_negative_lag() {
         let mut watermarks = HashMap::new();
         watermarks.insert(TopicPartition::new("topic1", 0), (0, 100));
