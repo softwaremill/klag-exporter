@@ -51,6 +51,7 @@ data:
     offset_fetch_timeout = {{ .offset_fetch_timeout | quote }}
     max_concurrent_groups = {{ .max_concurrent_groups }}
     max_concurrent_watermarks = {{ .max_concurrent_watermarks }}
+    max_blocking_threads = {{ .max_blocking_threads }}
     client_recycle_interval = {{ .client_recycle_interval }}
     {{- end }}
 
