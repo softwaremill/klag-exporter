@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.27](https://github.com/softwaremill/klag-exporter/compare/v0.1.26...v0.1.27) - 2026-08-25
+
+### Added
+
+- *(helm)* expose max_blocking_threads
+
+### Fixed
+
+- clarify verbiage regarding sizing estimation
+
+### Other
+
+- Merge remote-tracking branch 'origin/main' into pr-101
+- Merge pull request #97 from adam820/feat/configurable-fetch-timeout
+
 ## [0.1.26](https://github.com/softwaremill/klag-exporter/compare/v0.1.25...v0.1.26) - 2026-07-09
 
 ### Other
