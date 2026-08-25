@@ -254,6 +254,7 @@ rate_min_msgs_per_sec = 0.01       # below this rate → time lag reported as mi
 # Message-mode tuning (only used when mode = "message"):
 cache_ttl = "60s"
 max_concurrent_fetches = 10
+fetch_timeout = "5s"
 # Skip the per-message fetch for every partition whose committed offset has
 # fallen below the low watermark, i.e. retention deleted the committed message.
 # Such a fetch resets to the earliest surviving offset, and on a drained
@@ -651,6 +652,13 @@ Each entry in the timestamp consumer pool (`max_concurrent_fetches`) is a full l
 ```toml
 [exporter.timestamp_sampling]
 max_concurrent_fetches = 5   # Default: 5. Each is a full Kafka client.
+```
+
+Each fetch polls for a message at the committed offset for up to `fetch_timeout` (default 5s) before giving up. On idle or largely idle clusters many committed offsets sit at the partition's high watermark with no message to read, so every one of those fetches blocks for the full timeout; on large clusters that serializes behind `max_concurrent_fetches` and can push a collection cycle past the poll interval. Lower it to bound the worst-case per-fetch wait:
+
+```toml
+[exporter.timestamp_sampling]
+fetch_timeout = "5s"   # Default: 5s. Per-message poll timeout.
 ```
 
 ## Troubleshooting

@@ -27,6 +27,9 @@ data:
     {{- if .max_concurrent_fetches }}
     max_concurrent_fetches = {{ .max_concurrent_fetches }}
     {{- end }}
+    {{- if .fetch_timeout }}
+    fetch_timeout = {{ .fetch_timeout | quote }}
+    {{- end }}
     {{- if hasKey . "skip_data_loss_partitions" }}
     skip_data_loss_partitions = {{ .skip_data_loss_partitions }}
     {{- end }}
@@ -54,6 +57,7 @@ data:
     offset_fetch_timeout = {{ .offset_fetch_timeout | quote }}
     max_concurrent_groups = {{ .max_concurrent_groups }}
     max_concurrent_watermarks = {{ .max_concurrent_watermarks }}
+    max_blocking_threads = {{ .max_blocking_threads }}
     client_recycle_interval = {{ .client_recycle_interval }}
     {{- end }}
 

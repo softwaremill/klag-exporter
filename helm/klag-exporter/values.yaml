@@ -139,6 +139,7 @@ config:
     # Message-mode settings (ignored when mode = "rate"):
     # cache_ttl: "60s"
     # max_concurrent_fetches: 10
+    # fetch_timeout: "5s"
     # Skip the fetch for every partition whose committed offset has fallen below
     # the low watermark, i.e. retention deleted the committed message. Such a
     # fetch resets to the earliest surviving offset and, on a drained partition,
@@ -163,6 +164,10 @@ config:
     max_concurrent_groups: 10
     # Maximum partitions to fetch watermarks for in parallel
     max_concurrent_watermarks: 50
+    # Tokio blocking-thread pool. Shared by ALL cluster loops in the process.
+    # Multi-cluster sizing: clusters * (max_concurrent_groups + sampler) + 4 headroom.
+    # sampler = timestamp_sampling.max_concurrent_fetches when enabled && mode="message", else 0.
+    max_blocking_threads: 64
     # Recycle librdkafka clients every N cycles to release accumulated metadata.
     # Set to 0 to disable. Default: 50 (~25 min at 30s poll interval).
     client_recycle_interval: 50

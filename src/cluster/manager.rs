@@ -59,8 +59,11 @@ impl ClusterManager {
                     // Only build the pool when actually using it. This is
                     // the Tier-3 resident-memory saving for rate-mode users:
                     // no BaseConsumer pool, no extra librdkafka clients.
-                    let ts_consumer =
-                        TimestampConsumer::with_pool_size(config, ts_cfg.max_concurrent_fetches)?;
+                    let ts_consumer = TimestampConsumer::with_pool_size(
+                        config,
+                        ts_cfg.max_concurrent_fetches,
+                        ts_cfg.fetch_timeout,
+                    )?;
                     TimestampSampler::new_message(ts_consumer, ts_cfg.cache_ttl)
                 }
                 crate::config::TimestampSamplingMode::Rate => {

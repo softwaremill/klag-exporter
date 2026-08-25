@@ -36,6 +36,10 @@ enabled = true
 # Message-mode settings (ignored when mode = "rate"):
 cache_ttl = "60s"
 max_concurrent_fetches = 5
+# Per-message poll timeout: how long each fetch waits for a message at the
+# committed offset before giving up. Bounds the per-fetch wait so an idle
+# partition or slow broker can't stall the collection cycle.
+fetch_timeout = "5s"
 # Skip the per-message fetch for every partition whose committed offset has
 # fallen below the low watermark, i.e. retention deleted the committed message.
 # Such a fetch resets to the earliest surviving offset, and on a drained
