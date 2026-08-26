@@ -131,6 +131,11 @@ pub struct PerformanceConfig {
     /// Timeout for fetching committed offsets per consumer group
     #[serde(with = "humantime_serde", default = "default_offset_fetch_timeout")]
     pub offset_fetch_timeout: Duration,
+    /// Additional attempts for retriable failures while fetching consumer-group
+    /// descriptions and committed offsets (`DescribeConsumerGroups` and
+    /// `ListConsumerGroupOffsets`). Set to 0 to disable retries.
+    #[serde(default = "default_group_fetch_retries")]
+    pub group_fetch_retries: usize,
     /// Maximum number of consumer groups to fetch offsets for in parallel
     #[serde(default = "default_max_concurrent_groups")]
     pub max_concurrent_groups: usize,
@@ -308,6 +313,10 @@ const fn default_offset_fetch_timeout() -> Duration {
     Duration::from_secs(10)
 }
 
+const fn default_group_fetch_retries() -> usize {
+    0
+}
+
 const fn default_max_concurrent_groups() -> usize {
     10
 }
@@ -417,6 +426,7 @@ impl Default for PerformanceConfig {
         Self {
             kafka_timeout: default_kafka_timeout(),
             offset_fetch_timeout: default_offset_fetch_timeout(),
+            group_fetch_retries: default_group_fetch_retries(),
             max_concurrent_groups: default_max_concurrent_groups(),
             max_concurrent_watermarks: default_max_concurrent_watermarks(),
             client_recycle_interval: default_client_recycle_interval(),
@@ -861,6 +871,7 @@ bootstrap_servers = "localhost:9092"
             config.exporter.performance.offset_fetch_timeout,
             Duration::from_secs(10)
         );
+        assert_eq!(config.exporter.performance.group_fetch_retries, 0);
         assert_eq!(config.exporter.performance.max_concurrent_groups, 10);
         assert_eq!(config.exporter.performance.max_concurrent_watermarks, 50);
         assert_eq!(config.exporter.performance.client_recycle_interval, 50);
@@ -980,6 +991,7 @@ poll_interval = "60s"
 [exporter.performance]
 kafka_timeout = "15s"
 offset_fetch_timeout = "5s"
+group_fetch_retries = 2
 max_concurrent_groups = 20
 max_concurrent_watermarks = 100
 client_recycle_interval = 0
@@ -1001,6 +1013,7 @@ bootstrap_servers = "localhost:9092"
             config.exporter.performance.offset_fetch_timeout,
             Duration::from_secs(5)
         );
+        assert_eq!(config.exporter.performance.group_fetch_retries, 2);
         assert_eq!(config.exporter.performance.max_concurrent_groups, 20);
         assert_eq!(config.exporter.performance.max_concurrent_watermarks, 100);
         assert_eq!(config.exporter.performance.client_recycle_interval, 0);

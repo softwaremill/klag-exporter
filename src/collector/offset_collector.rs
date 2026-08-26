@@ -1,6 +1,7 @@
 use crate::config::{CompiledFilters, Granularity, PerformanceConfig};
 use crate::error::Result;
 use crate::kafka::client::{ConsumerGroupInfo, KafkaClient, TopicPartition};
+use crate::retry::{full_jitter_backoff, retry_with_backoff};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -515,7 +516,7 @@ impl OffsetCollector {
         &self,
         group_ids: &[&str],
     ) -> HashMap<String, HashMap<TopicPartition, i64>> {
-        use crate::kafka::admin::list_consumer_group_offsets_batched;
+        use crate::kafka::admin::{list_consumer_group_offsets_batched, AdminRequestError};
 
         if group_ids.is_empty() {
             return HashMap::new();
@@ -526,11 +527,13 @@ impl OffsetCollector {
 
         let offset_timeout = self.performance.offset_fetch_timeout;
         let max_concurrent = self.performance.max_concurrent_groups;
+        let max_retries = self.performance.group_fetch_retries;
 
         debug!(
             groups = group_ids.len(),
             per_call_chunk = PER_CALL_CHUNK,
             max_concurrent = max_concurrent,
+            max_retries = max_retries,
             "Fetching group offsets (one call per group, fanned out)"
         );
 
@@ -539,25 +542,52 @@ impl OffsetCollector {
 
         let mut handles = Vec::with_capacity(group_ids.len());
         for gid in group_ids {
-            let gid = gid.to_string();
+            let gid: Arc<str> = Arc::from(*gid);
             let permit = semaphore.clone();
             let client_clone = Arc::clone(&client);
             handles.push(tokio::spawn(async move {
-                let _permit: OwnedSemaphorePermit =
-                    permit.acquire_owned().await.expect("semaphore closed");
-                // Return the group id alongside the result so failure logs
-                // can report which group broke.
-                let result = tokio::task::spawn_blocking({
-                    let gid = gid.clone();
-                    move || {
-                        list_consumer_group_offsets_batched(
-                            &client_clone.admin_handle(),
-                            &[gid.as_str()],
-                            offset_timeout,
-                            PER_CALL_CHUNK,
-                        )
-                    }
-                })
+                let result = retry_with_backoff(
+                    max_retries,
+                    |attempt| {
+                        let gid = Arc::clone(&gid);
+                        let permit = Arc::clone(&permit);
+                        let client = Arc::clone(&client_clone);
+                        async move {
+                            if attempt > 1 {
+                                debug!(
+                                    group = %gid,
+                                    attempt = attempt,
+                                    max_attempts = max_retries.saturating_add(1),
+                                    "Retrying failed ListConsumerGroupOffsets request"
+                                );
+                            }
+                            // Every attempt, including retries, acquires the
+                            // same concurrency permit. Release it before any
+                            // retry backoff so sleeping calls do not occupy a
+                            // scarce blocking-operation slot.
+                            let _permit: OwnedSemaphorePermit =
+                                permit.acquire_owned().await.expect("semaphore closed");
+                            let response = tokio::task::spawn_blocking(move || {
+                                list_consumer_group_offsets_batched(
+                                    &client.admin_handle(),
+                                    &[gid.as_ref()],
+                                    offset_timeout,
+                                    PER_CALL_CHUNK,
+                                )
+                            })
+                            .await
+                            .map_err(|error| {
+                                AdminRequestError::task(
+                                    "ListConsumerGroupOffsets",
+                                    format!("blocking task failed: {error}"),
+                                )
+                            })??;
+                            response.into_single_group_result()
+                        }
+                    },
+                    AdminRequestError::is_retriable,
+                    full_jitter_backoff,
+                )
                 .await;
                 (gid, result)
             }));
@@ -568,12 +598,24 @@ impl OffsetCollector {
         let mut merged: HashMap<String, HashMap<TopicPartition, i64>> = HashMap::new();
         for r in results {
             match r {
-                Ok((_gid, Ok(Ok(map)))) => merged.extend(map),
-                Ok((gid, Ok(Err(e)))) => {
-                    warn!(group = %gid, error = %e, "Group-offset call failed");
+                Ok((gid, Ok((map, attempts)))) => {
+                    if attempts > 1 {
+                        debug!(
+                            group = %gid,
+                            attempts,
+                            "ListConsumerGroupOffsets recovered after retry"
+                        );
+                    }
+                    merged.extend(map);
                 }
-                Ok((gid, Err(e))) => {
-                    warn!(group = %gid, error = %e, "Group-offset call task panicked");
+                Ok((gid, Err(failure))) => {
+                    warn!(
+                        group = %gid,
+                        error = %failure.error,
+                        attempts = failure.attempts,
+                        stop_reason = ?failure.reason,
+                        "Group-offset call failed"
+                    );
                 }
                 Err(e) => warn!(error = %e, "Group-offset join error"),
             }
@@ -608,6 +650,146 @@ fn chrono_timestamp_ms() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::ClusterConfig;
+    use rdkafka::mocking::{MockCluster, MockCoordinator};
+    use rdkafka::producer::DefaultProducerContext;
+    use rdkafka::types::{RDKafkaApiKey, RDKafkaRespErr};
+
+    const MOCK_GROUP: &str = "retry-test-group";
+
+    fn mock_offset_collector(
+        max_retries: usize,
+    ) -> (
+        MockCluster<'static, DefaultProducerContext>,
+        OffsetCollector,
+    ) {
+        let mock_cluster = MockCluster::new(1).expect("create mock Kafka cluster");
+        mock_cluster
+            .coordinator(MockCoordinator::Group(MOCK_GROUP.to_string()), 1)
+            .expect("set mock group coordinator");
+
+        let cluster = ClusterConfig {
+            name: "mock".to_string(),
+            bootstrap_servers: mock_cluster.bootstrap_servers(),
+            group_whitelist: vec![".*".to_string()],
+            group_blacklist: vec![],
+            topic_whitelist: vec![".*".to_string()],
+            topic_blacklist: vec![],
+            consumer_properties: HashMap::new(),
+            labels: HashMap::new(),
+        };
+        let filters = cluster.compile_filters().expect("compile filters");
+        let performance = PerformanceConfig {
+            offset_fetch_timeout: Duration::from_secs(2),
+            group_fetch_retries: max_retries,
+            max_concurrent_groups: 1,
+            ..PerformanceConfig::default()
+        };
+        let client = Arc::new(
+            KafkaClient::with_performance(&cluster, performance.clone())
+                .expect("create Kafka client"),
+        );
+        let collector =
+            OffsetCollector::with_performance(client, filters, performance, Granularity::Topic);
+
+        (mock_cluster, collector)
+    }
+
+    #[tokio::test]
+    async fn group_offset_fetch_does_not_retry_when_disabled() {
+        let (mock_cluster, collector) = mock_offset_collector(0);
+        mock_cluster.request_errors(
+            RDKafkaApiKey::OffsetFetch,
+            &[RDKafkaRespErr::RD_KAFKA_RESP_ERR_COORDINATOR_LOAD_IN_PROGRESS],
+        );
+
+        let failed = collector
+            .fetch_all_group_offsets_batched(&[MOCK_GROUP])
+            .await;
+        assert!(
+            !failed.contains_key(MOCK_GROUP),
+            "a failed group should be omitted when retries are disabled"
+        );
+
+        // The injected error is consumed by the first broker request. A second
+        // collection succeeds, proving that the first result was caused by the
+        // lack of an application-level retry rather than bad mock setup.
+        let next_collection = collector
+            .fetch_all_group_offsets_batched(&[MOCK_GROUP])
+            .await;
+        assert!(next_collection.contains_key(MOCK_GROUP));
+    }
+
+    #[tokio::test]
+    async fn group_offset_fetch_recovers_from_one_retriable_broker_error() {
+        let (mock_cluster, collector) = mock_offset_collector(1);
+        mock_cluster.request_errors(
+            RDKafkaApiKey::OffsetFetch,
+            &[RDKafkaRespErr::RD_KAFKA_RESP_ERR_COORDINATOR_LOAD_IN_PROGRESS],
+        );
+
+        let offsets = collector
+            .fetch_all_group_offsets_batched(&[MOCK_GROUP])
+            .await;
+
+        assert!(
+            offsets.contains_key(MOCK_GROUP),
+            "the retry should recover the successful empty-offset response"
+        );
+    }
+
+    #[tokio::test]
+    async fn group_offset_fetch_does_not_retry_transport_disconnect_when_disabled() {
+        let (mock_cluster, collector) = mock_offset_collector(0);
+        mock_cluster.request_errors(
+            RDKafkaApiKey::OffsetFetch,
+            &[RDKafkaRespErr::RD_KAFKA_RESP_ERR__TRANSPORT],
+        );
+
+        let failed = collector
+            .fetch_all_group_offsets_batched(&[MOCK_GROUP])
+            .await;
+        assert!(!failed.contains_key(MOCK_GROUP));
+    }
+
+    #[tokio::test]
+    async fn group_offset_fetch_recovers_from_transport_disconnect() {
+        let (mock_cluster, collector) = mock_offset_collector(1);
+        mock_cluster.request_errors(
+            RDKafkaApiKey::OffsetFetch,
+            &[RDKafkaRespErr::RD_KAFKA_RESP_ERR__TRANSPORT],
+        );
+
+        let offsets = collector
+            .fetch_all_group_offsets_batched(&[MOCK_GROUP])
+            .await;
+
+        assert!(
+            offsets.contains_key(MOCK_GROUP),
+            "the retry should reconnect after a broker transport disconnect"
+        );
+    }
+
+    #[tokio::test]
+    async fn group_offset_fetch_does_not_retry_permanent_broker_errors() {
+        let (mock_cluster, collector) = mock_offset_collector(1);
+        mock_cluster.request_errors(
+            RDKafkaApiKey::OffsetFetch,
+            &[RDKafkaRespErr::RD_KAFKA_RESP_ERR_GROUP_AUTHORIZATION_FAILED],
+        );
+
+        let failed = collector
+            .fetch_all_group_offsets_batched(&[MOCK_GROUP])
+            .await;
+        assert!(!failed.contains_key(MOCK_GROUP));
+
+        // If the collector had retried the permanent error, that retry would
+        // have consumed the mock broker's next (successful) response already.
+        let next_collection = collector
+            .fetch_all_group_offsets_batched(&[MOCK_GROUP])
+            .await;
+        assert!(next_collection.contains_key(MOCK_GROUP));
+    }
 
     #[test]
     fn test_offsets_snapshot_filtered_groups() {

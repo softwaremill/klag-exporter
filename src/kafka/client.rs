@@ -242,6 +242,7 @@ impl KafkaClient {
             100,
             parse_assignments,
             max_concurrent_chunks,
+            self.performance.group_fetch_retries,
         )
         .await?;
 
