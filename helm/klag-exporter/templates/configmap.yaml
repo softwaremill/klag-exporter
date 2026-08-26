@@ -49,7 +49,7 @@ data:
     {{- with index .Values.config "exporter.performance" }}
     kafka_timeout = {{ .kafka_timeout | quote }}
     offset_fetch_timeout = {{ .offset_fetch_timeout | quote }}
-    group_fetch_retries = {{ .group_fetch_retries }}
+    group_fetch_retries = {{ .group_fetch_retries | default 0 }}
     max_concurrent_groups = {{ .max_concurrent_groups }}
     max_concurrent_watermarks = {{ .max_concurrent_watermarks }}
     client_recycle_interval = {{ .client_recycle_interval }}
