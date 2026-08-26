@@ -1246,7 +1246,7 @@ dependencies = [
 
 [[package]]
 name = "klag-exporter"
-version = "0.1.27"
+version = "0.1.28"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1263,7 +1263,7 @@ dependencies = [
  "opentelemetry-otlp",
  "opentelemetry_sdk",
  "prometheus",
- "rand 0.9.4",
+ "rand 0.9.5",
  "rdkafka",
  "regex",
  "serde",
