@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.28](https://github.com/softwaremill/klag-exporter/compare/v0.1.27...v0.1.28) - 2026-08-26
+
+### Added
+
+- Configurable retries for transient group fetch errors ([#102](https://github.com/softwaremill/klag-exporter/pull/102))
+
+### Other
+
+- Merge pull request #106 from softwaremill/release-plz-2026-08-25T11-59-39Z
+- Merge remote-tracking branch 'origin/main' into pr-101
+
 ## [0.1.27](https://github.com/softwaremill/klag-exporter/compare/v0.1.26...v0.1.27) - 2026-08-25
 
 ### Added
