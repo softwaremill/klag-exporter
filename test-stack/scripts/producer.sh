@@ -6,9 +6,20 @@
 BOOTSTRAP_SERVER="kafka:29092"
 TOPIC1="test-topic"
 TOPIC2="high-volume-topic"
+GRAFANA_URL="http://grafana:3000"
 
 # Message counter
 MSG_COUNT=0
+
+# Function to create Grafana annotation for phase visibility
+annotate() {
+    local text="$1"
+    local tags="$2"
+    curl -s -X POST "$GRAFANA_URL/api/annotations" \
+        -H "Content-Type: application/json" \
+        -d "{\"text\": \"$text\", \"tags\": [$tags]}" \
+        2>/dev/null || true  # Don't fail if Grafana isn't ready
+}
 
 # Function to produce messages
 produce_messages() {
@@ -34,30 +45,36 @@ echo "This will create lag patterns observable in Grafana"
 
 while true; do
     # Phase 1: Steady low rate (10 msg/sec for 30 seconds)
+    annotate "Producer Phase 1: Low rate 10 msg/sec for 30s" "\"producer\", \"phase1\""
     echo "[$(date)] Phase 1: Low rate - 10 msg/sec for 30s"
     for ((j=1; j<=30; j++)); do
         produce_messages $TOPIC1 10 0.1
     done
 
     # Phase 2: Burst - high volume (100 messages quickly)
+    annotate "Producer Phase 2: Burst 100 messages to test-topic" "\"producer\", \"phase2\", \"burst\""
     echo "[$(date)] Phase 2: Burst - 100 messages to $TOPIC1"
     produce_messages $TOPIC1 100 0.01
 
     # Phase 3: High volume topic burst
+    annotate "Producer Phase 3: High volume burst 200 messages" "\"producer\", \"phase3\", \"burst\""
     echo "[$(date)] Phase 3: High volume burst - 200 messages to $TOPIC2"
     produce_messages $TOPIC2 200 0.005
 
     # Phase 4: Steady medium rate (20 msg/sec for 30 seconds)
+    annotate "Producer Phase 4: Medium rate 20 msg/sec for 30s" "\"producer\", \"phase4\""
     echo "[$(date)] Phase 4: Medium rate - 20 msg/sec for 30s"
     for ((j=1; j<=30; j++)); do
         produce_messages $TOPIC1 20 0.05
     done
 
     # Phase 5: Pause (let consumer catch up)
+    annotate "Producer Phase 5: Pause for 20s (consumer catch-up)" "\"producer\", \"phase5\", \"pause\""
     echo "[$(date)] Phase 5: Pause for 20s (consumer catch-up)"
     sleep 20
 
     # Phase 6: Multi-topic burst
+    annotate "Producer Phase 6: Multi-topic burst" "\"producer\", \"phase6\", \"burst\""
     echo "[$(date)] Phase 6: Multi-topic burst"
     produce_messages $TOPIC1 50 0.02 &
     produce_messages $TOPIC2 100 0.01 &
