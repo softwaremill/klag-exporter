@@ -516,7 +516,7 @@ impl OffsetCollector {
         &self,
         group_ids: &[&str],
     ) -> HashMap<String, HashMap<TopicPartition, i64>> {
-        use crate::kafka::admin::{list_consumer_group_offsets_batched, AdminRequestError};
+        use crate::kafka::admin::AdminRequestError;
 
         if group_ids.is_empty() {
             return HashMap::new();
@@ -568,8 +568,7 @@ impl OffsetCollector {
                             let _permit: OwnedSemaphorePermit =
                                 permit.acquire_owned().await.expect("semaphore closed");
                             let response = tokio::task::spawn_blocking(move || {
-                                list_consumer_group_offsets_batched(
-                                    &client.admin_handle(),
+                                client.list_consumer_group_offsets(
                                     &[gid.as_ref()],
                                     offset_timeout,
                                     PER_CALL_CHUNK,

@@ -137,14 +137,6 @@ impl KafkaClient {
         )
     }
 
-    /// Public accessor for the underlying `AdminClient` Arc. Used by batched
-    /// Admin API wrappers in `kafka::admin` and by integration tests. The
-    /// caller holds the Arc for the duration of the FFI call to keep the
-    /// native handle valid.
-    pub fn admin_handle(&self) -> Arc<AdminClient<DefaultClientContext>> {
-        self.admin()
-    }
-
     /// Get a snapshot of the current consumer (cheap Arc clone).
     fn consumer(&self) -> Arc<BaseConsumer> {
         Arc::clone(
@@ -152,6 +144,26 @@ impl KafkaClient {
                 .consumer
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
+    }
+
+    /// Fetch committed offsets for `group_ids` (blocking; call from
+    /// `spawn_blocking`). Issued on the internal consumer, not the
+    /// `AdminClient` — see `list_consumer_group_offsets_batched` for why.
+    pub(crate) fn list_consumer_group_offsets(
+        &self,
+        group_ids: &[&str],
+        timeout: Duration,
+        chunk_size: usize,
+    ) -> std::result::Result<
+        crate::kafka::admin::GroupOffsetsResponse,
+        crate::kafka::admin::AdminRequestError,
+    > {
+        crate::kafka::admin::list_consumer_group_offsets_batched(
+            &self.consumer(),
+            group_ids,
+            timeout,
+            chunk_size,
         )
     }
 
