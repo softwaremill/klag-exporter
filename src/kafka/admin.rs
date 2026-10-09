@@ -40,6 +40,7 @@ use rdkafka::bindings::{
     RD_KAFKA_EVENT_LISTCONSUMERGROUPOFFSETS_RESULT, RD_KAFKA_EVENT_LISTOFFSETS_RESULT,
 };
 use rdkafka::client::DefaultClientContext;
+use rdkafka::consumer::{BaseConsumer, Consumer};
 use std::collections::{HashMap, HashSet};
 use std::ffi::{CStr, CString};
 use std::fmt;
@@ -810,8 +811,16 @@ unsafe fn ptr_to_string(p: *const c_char) -> String {
 /// (much smaller) response.
 ///
 /// Chunks groups into sub-calls of at most `chunk_size` groups each.
+///
+/// Takes a consumer rather than the `AdminClient` on purpose: librdkafka
+/// parses the response with the consumer's OffsetFetch handler, which on a
+/// coordinator error (e.g. `NOT_COORDINATOR` while a broker shuts down)
+/// re-queries the coordinator through the handle's consumer group. An
+/// `AdminClient` is a producer-type handle without one, and librdkafka
+/// dereferences it unchecked (SIGSEGV, issue #111). `consumer` must have a
+/// `group.id` configured.
 pub(crate) fn list_consumer_group_offsets_batched(
-    admin: &AdminClient<DefaultClientContext>,
+    consumer: &BaseConsumer,
     group_ids: &[&str],
     timeout: Duration,
     chunk_size: usize,
@@ -825,7 +834,7 @@ pub(crate) fn list_consumer_group_offsets_batched(
         failures: Vec::new(),
     };
     for chunk in group_ids.chunks(chunk_size) {
-        let mut part = list_consumer_group_offsets_one_chunk(admin, chunk, timeout)?;
+        let mut part = list_consumer_group_offsets_one_chunk(consumer, chunk, timeout)?;
         response.offsets.extend(part.offsets);
         response.failures.append(&mut part.failures);
     }
@@ -853,12 +862,12 @@ impl GroupOffsetsResponse {
 }
 
 fn list_consumer_group_offsets_one_chunk(
-    admin: &AdminClient<DefaultClientContext>,
+    consumer: &BaseConsumer,
     group_ids: &[&str],
     timeout: Duration,
 ) -> std::result::Result<GroupOffsetsResponse, AdminRequestError> {
     let timeout_ms = timeout.as_millis().min(i32::MAX as u128) as i32;
-    let rk = admin_native_ptr(admin);
+    let rk = consumer.client().native_ptr();
 
     let cstrings: Vec<CString> = group_ids
         .iter()
@@ -1209,5 +1218,43 @@ mod tests {
             partitioned.terminal_failures[0].group_id,
             "permanent-failure"
         );
+    }
+
+    /// Regression test for #111. A broker handing off group coordination
+    /// answers OffsetFetch with NOT_COORDINATOR, which makes librdkafka
+    /// re-query the coordinator through the client's consumer group handle.
+    /// On a handle without one (e.g. an `AdminClient`) that is a NULL
+    /// dereference that takes the whole process down, so the request is
+    /// issued on a consumer handle and must come back as a retriable error.
+    #[test]
+    fn list_consumer_group_offsets_survives_not_coordinator() {
+        use rdkafka::config::ClientConfig;
+        use rdkafka::mocking::MockCluster;
+        use rdkafka::producer::DefaultProducerContext;
+        use rdkafka::types::{RDKafkaApiKey, RDKafkaRespErr};
+
+        let cluster: MockCluster<'_, DefaultProducerContext> =
+            MockCluster::new(1).expect("mock cluster");
+        cluster.request_errors(
+            RDKafkaApiKey::OffsetFetch,
+            &[RDKafkaRespErr::RD_KAFKA_RESP_ERR_NOT_COORDINATOR],
+        );
+
+        let consumer: BaseConsumer = ClientConfig::new()
+            .set("bootstrap.servers", cluster.bootstrap_servers())
+            .set("group.id", "klag-exporter-internal-test")
+            .create()
+            .expect("consumer");
+
+        let error = list_consumer_group_offsets_batched(
+            &consumer,
+            &["some-group"],
+            Duration::from_secs(10),
+            1,
+        )
+        .and_then(GroupOffsetsResponse::into_single_group_result)
+        .expect_err("NOT_COORDINATOR must surface as an error");
+
+        assert!(error.is_retriable(), "unexpected error: {error}");
     }
 }
