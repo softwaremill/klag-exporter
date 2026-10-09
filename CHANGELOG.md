@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.29](https://github.com/softwaremill/klag-exporter/compare/v0.1.28...v0.1.29) - 2026-10-09
+
+### Added
+
+- add curl-static feature for OIDC SASL support ([#109](https://github.com/softwaremill/klag-exporter/pull/109))
+
 ## [0.1.28](https://github.com/softwaremill/klag-exporter/compare/v0.1.27...v0.1.28) - 2026-08-26
 
 ### Added
