@@ -90,7 +90,8 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ steps.rust_version.outputs.version }}-${{ github.ref_name }}-${{ hashFiles('**/Cargo.lock') }}
           cache-targets: true
           cache-on-failure: true
-      - run: cargo build --release
+      # Same feature set as the release binaries (post-release.yml)
+      - run: cargo build --release --features curl-static
 
   helm-chart-lint:
     name: Lint Helm Chart

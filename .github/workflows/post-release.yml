@@ -57,7 +57,7 @@ jobs:
           cache-on-failure: true
 
       - name: Build
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo build --release --features curl-static --target ${{ matrix.target }}
 
       - name: Package binary
         run: |

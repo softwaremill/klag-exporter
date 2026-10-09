@@ -407,6 +407,10 @@ cargo build --release
 # Release build with High Availability support
 cargo build --release --features kubernetes
 
+# Release build with OIDC support (sasl.oauthbearer.method = "oidc"),
+# statically links libcurl; used for the published binaries and Docker images
+cargo build --release --features curl-static
+
 # Run tests
 cargo test
 
@@ -707,7 +711,7 @@ This repository uses GitHub Actions for continuous integration and delivery.
     - Format: cargo fmt --all --check
     - Clippy: cargo clippy --all-targets --all-features -- -D warnings
     - Test: cargo test --all-features
-    - Build: cargo build --release
+    - Build: cargo build --release --features curl-static (same feature set as the release binaries)
     - Lint Helm Chart: helm lint ./helm/klag-exporter and a template render check
   - Notes: Installs system packages (cmake, libssl-dev, libsasl2-dev, pkg-config), uses dtolnay/rust-toolchain and Swatinem/rust-cache.
 
@@ -726,7 +730,7 @@ This repository uses GitHub Actions for continuous integration and delivery.
 - Post Release (post-release.yml)
   - Trigger: when a GitHub Release is created
   - Jobs:
-    - Build binaries for linux x86_64 and aarch64 and upload them as artifacts
+    - Build binaries for linux x86_64 and aarch64 (with the curl-static feature) and upload them as artifacts
     - Upload binaries to the GitHub Release
     - Build and push multi-arch Docker images to ghcr.io using Dockerfile.release and the prebuilt binaries
       - Tags: full semver, major.minor, major, and latest (on default branch)
