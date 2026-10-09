@@ -51,6 +51,11 @@ kube-lease-manager = { version = "0.8", optional = true }
 default = ["jemalloc"]
 jemalloc = ["tikv-jemallocator"]
 kubernetes = ["kube", "k8s-openapi", "kube-lease-manager"]
+# Statically links libcurl into librdkafka, enabling `sasl.oauthbearer.method
+# = "oidc"`. Without it, that property is rejected at client-config time
+# with "OAuth/OIDC depends on libcurl and OpenSSL which were not available
+# at build time".
+curl-static = ["rdkafka/curl-static"]
 
 [dev-dependencies]
 testcontainers = "0.15"
